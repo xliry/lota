@@ -9,6 +9,14 @@ export class LotaApiClient {
     this.agentId = process.env.LOTA_AGENT_ID;
   }
 
+  setAgentId(agentId: string) {
+    this.agentId = agentId;
+  }
+
+  getAgentId(): string | undefined {
+    return this.agentId;
+  }
+
   private getHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
