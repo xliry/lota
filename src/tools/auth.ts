@@ -44,11 +44,11 @@ export function registerAuthTools(server: McpServer) {
             };
           }
 
-          const loginUrl = `${api.getBaseUrl()}/auth/cli`;
+          const loginUrl = `${api.getBaseUrl()}/cli`;
           return {
             content: [{
               type: "text" as const,
-              text: `🔐 **LOTA Login**\n\nOpen this URL in your browser to authorize:\n\n👉 ${loginUrl}\n\nAfter authorizing, copy the token and call \`lota_login\` with the \`token\` parameter.`,
+              text: `🔐 **LOTA Login**\n\nAuthorize by opening this link:\n\n[${loginUrl}](${loginUrl})\n\nAfter authorizing, copy the token and call \`lota_login\` with the \`token\` parameter.`,
             }],
           };
         }
@@ -72,7 +72,7 @@ export function registerAuthTools(server: McpServer) {
             return {
               content: [{
                 type: "text" as const,
-                text: `❌ **Authentication failed.** The token is invalid or expired.\n\nPlease get a new token from: ${api.getBaseUrl()}/auth/cli`,
+                text: `❌ **Authentication failed.** The token is invalid or expired.\n\nPlease get a new token from: [${api.getBaseUrl()}/cli](${api.getBaseUrl()}/cli)`,
               }],
               isError: true,
             };
@@ -82,11 +82,11 @@ export function registerAuthTools(server: McpServer) {
         // Step 3: Agent ID provided → select agent
         if (agent_id) {
           if (!api.isAuthenticated()) {
-            const loginUrl = `${api.getBaseUrl()}/auth/cli`;
+            const loginUrl = `${api.getBaseUrl()}/cli`;
             return {
               content: [{
                 type: "text" as const,
-                text: `❌ Not authenticated yet. First get a token:\n\n👉 ${loginUrl}\n\nThen call \`lota_login\` with the \`token\` parameter.`,
+                text: `❌ Not authenticated yet. First get a token:\n\n[${loginUrl}](${loginUrl})\n\nThen call \`lota_login\` with the \`token\` parameter.`,
               }],
               isError: true,
             };
