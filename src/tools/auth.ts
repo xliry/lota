@@ -128,6 +128,48 @@ export function registerAuthTools(server: McpServer) {
   );
 
   server.tool(
+    "register_webhook",
+    "Register a webhook URL for the current agent. When tasks are assigned or messages are sent, LOTA will POST a notification to this URL.",
+    {
+      webhook_url: z.string().describe("The webhook URL to register (e.g., http://localhost:9100/webhook). Pass empty string to unregister."),
+    },
+    async ({ webhook_url }) => {
+      const agentId = api.getAgentId();
+      if (!agentId) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "Not logged in. Use `lota_login` first.",
+          }],
+          isError: true,
+        };
+      }
+
+      try {
+        const result = await api.patch<{ id: string; agent_id: string; webhook_url: string | null }>(
+          `/api/members/${agentId}/webhook`,
+          { webhook_url: webhook_url || null }
+        );
+        const action = result.webhook_url ? `registered: ${result.webhook_url}` : "unregistered";
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Webhook ${action} for agent \`${agentId}\`.`,
+          }],
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Failed to register webhook: ${(e as Error).message}`,
+          }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
     "lota_whoami",
     "Check which agent is currently logged in and authentication status",
     {},

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { LotaApiClient } from "./api.js";
@@ -25,6 +26,9 @@ interface RunnerConfig {
   model: string;
   apiUrl: string;
   serviceKey: string;
+  webhookPort: number;
+  webhookHost: string;
+  publicUrl: string;
 }
 
 function parseArgs(): RunnerConfig {
@@ -33,6 +37,9 @@ function parseArgs(): RunnerConfig {
   let pollInterval = 15000;
   let workDir = process.cwd();
   let model = "sonnet";
+  let webhookPort = 9100;
+  let webhookHost = "0.0.0.0";
+  let publicUrl = "";
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -48,6 +55,15 @@ function parseArgs(): RunnerConfig {
       case "--model":
         model = args[++i];
         break;
+      case "--webhook-port":
+        webhookPort = parseInt(args[++i], 10);
+        break;
+      case "--webhook-host":
+        webhookHost = args[++i];
+        break;
+      case "--public-url":
+        publicUrl = args[++i];
+        break;
     }
   }
 
@@ -55,7 +71,7 @@ function parseArgs(): RunnerConfig {
   const serviceKey = process.env.LOTA_SERVICE_KEY || "";
 
   if (!agentId) {
-    console.error("Usage: node dist/runner.js --agent-id <id> [--poll-interval <ms>] [--work-dir <path>] [--model <model>]");
+    console.error("Usage: node dist/runner.js --agent-id <id> [--poll-interval <ms>] [--work-dir <path>] [--model <model>] [--webhook-port <port>] [--webhook-host <host>] [--public-url <url>]");
     process.exit(1);
   }
   if (!serviceKey) {
@@ -63,7 +79,7 @@ function parseArgs(): RunnerConfig {
     process.exit(1);
   }
 
-  return { agentId, pollInterval, workDir, model, apiUrl, serviceKey };
+  return { agentId, pollInterval, workDir, model, apiUrl, serviceKey, webhookPort, webhookHost, publicUrl };
 }
 
 // ── State ───────────────────────────────────────────────────────────
@@ -75,6 +91,8 @@ let currentProcess: ChildProcess | null = null;
 const processedTaskIds = new Set<string>();
 let lastMessageTimestamp: string;
 let shuttingDown = false;
+let webhookServer: Server | null = null;
+let sleepResolve: (() => void) | null = null;
 
 // ── API helpers ─────────────────────────────────────────────────────
 
@@ -387,6 +405,15 @@ function setupShutdownHandlers(): void {
     shuttingDown = true;
     log.info(`Received ${signal}, shutting down...`);
 
+    // Close webhook server
+    if (webhookServer) {
+      webhookServer.close();
+      webhookServer = null;
+    }
+
+    // Wake up the sleep so the main loop can exit
+    wakeUp();
+
     if (currentProcess) {
       log.info("Waiting for active subprocess to finish...");
       currentProcess.kill("SIGTERM");
@@ -440,6 +467,8 @@ async function main(): Promise<void> {
   log.info(`Work dir: ${config.workDir}`);
   log.info(`Model:    ${config.model}`);
   log.info(`Poll:     ${config.pollInterval}ms`);
+  log.info(`Webhook:  ${config.webhookHost}:${config.webhookPort}`);
+  if (config.publicUrl) log.info(`Public:   ${config.publicUrl}`);
   log.info("");
 
   // Verify connectivity
@@ -451,6 +480,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Start webhook server
+  webhookServer = startWebhookServer(config.webhookHost, config.webhookPort);
+
+  // Register webhook URL if public URL is provided
+  if (config.publicUrl) {
+    await registerWebhookUrl(config.publicUrl);
+  }
+
   // Main loop
   log.info("Entering poll loop...");
   while (!shuttingDown) {
@@ -460,7 +497,66 @@ async function main(): Promise<void> {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    sleepResolve = resolve;
+    setTimeout(() => {
+      sleepResolve = null;
+      resolve();
+    }, ms);
+  });
+}
+
+function wakeUp(): void {
+  if (sleepResolve) {
+    const resolve = sleepResolve;
+    sleepResolve = null;
+    resolve();
+  }
+}
+
+// ── Webhook server ─────────────────────────────────────────────────
+
+function startWebhookServer(host: string, port: number): Server {
+  const server = createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/webhook") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        try {
+          const payload = JSON.parse(body);
+          log.info(`Webhook received: ${payload.event}${payload.task_id ? ` (task: ${payload.task_id})` : ""}${payload.message_id ? ` (message: ${payload.message_id})` : ""}`);
+        } catch {
+          log.info("Webhook received (unparseable payload)");
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        // Wake up the poll loop immediately
+        wakeUp();
+      });
+    } else if (req.method === "GET" && req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", agent: config.agentId, busy: !!currentTask }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  server.listen(port, host, () => {
+    log.info(`Webhook server listening on ${host}:${port}`);
+  });
+
+  return server;
+}
+
+async function registerWebhookUrl(publicUrl: string): Promise<void> {
+  const webhookUrl = publicUrl.replace(/\/$/, "") + "/webhook";
+  try {
+    await api.patch(`/api/members/${config.agentId}/webhook`, { webhook_url: webhookUrl });
+    log.info(`Registered webhook URL: ${webhookUrl}`);
+  } catch (e) {
+    log.error(`Failed to register webhook URL: ${(e as Error).message}`);
+  }
 }
 
 main().catch((e) => {
