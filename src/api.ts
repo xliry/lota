@@ -2,11 +2,24 @@ export class LotaApiClient {
   private baseUrl: string;
   private serviceKey: string;
   private agentId: string | undefined;
+  private authToken: string | undefined;
 
   constructor() {
     this.baseUrl = process.env.LOTA_API_URL || "http://localhost:3000";
     this.serviceKey = process.env.LOTA_SERVICE_KEY || "";
     this.agentId = process.env.LOTA_AGENT_ID;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  setAuthToken(token: string) {
+    this.authToken = token;
+  }
+
+  getAuthToken(): string | undefined {
+    return this.authToken;
   }
 
   setAgentId(agentId: string) {
@@ -17,10 +30,17 @@ export class LotaApiClient {
     return this.agentId;
   }
 
+  isAuthenticated(): boolean {
+    return !!this.authToken;
+  }
+
   private getHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
+    if (this.authToken) {
+      headers["Authorization"] = `Bearer ${this.authToken}`;
+    }
     if (this.serviceKey) {
       headers["x-service-key"] = this.serviceKey;
     }
