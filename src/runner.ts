@@ -118,6 +118,16 @@ async function updateTaskStatus(taskId: string, status: string): Promise<void> {
   await api.patch(`/api/tasks/${taskId}/status`, { status });
 }
 
+async function submitReport(taskId: string, output: string): Promise<void> {
+  // Extract a summary from the output (last 500 chars or less)
+  const summary = output.length > 500 ? output.slice(-500) : output;
+  await api.post("/api/reports", {
+    task_id: taskId,
+    agent_id: config.agentId,
+    summary,
+  });
+}
+
 async function sendMessage(receiverId: string, content: string): Promise<void> {
   await api.post("/api/messages", {
     sender_agent_id: config.agentId,
@@ -297,6 +307,19 @@ async function executeTask(task: Task): Promise<void> {
 
     if (result.code === 0) {
       log.info(`Task ${task.id} subprocess exited successfully`);
+      // Submit completion report
+      try {
+        await submitReport(task.id, result.stdout);
+        log.info(`Task ${task.id} report submitted, status set to completed`);
+      } catch (e) {
+        log.error(`Failed to submit report for task ${task.id}: ${(e as Error).message}`);
+        // Fallback: at least mark as completed
+        try {
+          await updateTaskStatus(task.id, "completed");
+        } catch {
+          // ignore
+        }
+      }
     } else {
       log.error(`Task ${task.id} subprocess exited with code ${result.code}`);
       // Try to notify about failure
