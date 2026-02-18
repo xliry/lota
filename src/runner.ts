@@ -227,10 +227,18 @@ function spawnClaude(prompt: string, mcpConfigPath: string): Promise<{ code: num
 
     log.info(`Spawning: claude ${args.slice(0, 3).join(" ")} ...`);
 
+    // Remove Claude Code session env vars to avoid nested session errors
+    const cleanEnv = { ...process.env };
+    for (const key of Object.keys(cleanEnv)) {
+      if (key.startsWith("CLAUDE_CODE") || key === "CLAUDECODE" || key === "CLAUDE_SHELL_SESSION_ID") {
+        delete cleanEnv[key];
+      }
+    }
+
     const child = spawn("claude", args, {
       cwd: config.workDir,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
+      env: cleanEnv,
     });
 
     currentProcess = child;
