@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { writeFileSync, unlinkSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, readFileSync, unlinkSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { LotaApiClient } from "./api.js";
 import type { Task, Message } from "./types.js";
 
@@ -29,10 +29,27 @@ interface RunnerConfig {
   webhookPort: number;
   webhookHost: string;
   publicUrl: string;
+  skipPlan: boolean;
+  mcpServerPath: string;
+}
+
+interface ConfigFile {
+  agent_id: string;
+  api_url?: string;
+  service_key?: string;
+  work_dir?: string;
+  model?: string;
+  poll_interval?: number;
+  webhook_port?: number;
+  webhook_host?: string;
+  public_url?: string;
+  skip_plan?: boolean;
+  mcp_server_path?: string;
 }
 
 function parseArgs(): RunnerConfig {
   const args = process.argv.slice(2);
+  let configFile = "";
   let agentId = "";
   let pollInterval = 15000;
   let workDir = process.cwd();
@@ -40,7 +57,41 @@ function parseArgs(): RunnerConfig {
   let webhookPort = 9100;
   let webhookHost = "0.0.0.0";
   let publicUrl = "";
+  let skipPlan = false;
+  let mcpServerPath = "";
 
+  // First pass: check for --config
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--config") configFile = args[++i];
+  }
+
+  // Load config file if provided
+  if (configFile) {
+    const configPath = resolve(configFile);
+    if (!existsSync(configPath)) {
+      console.error(`Config file not found: ${configPath}`);
+      process.exit(1);
+    }
+    try {
+      const cfg: ConfigFile = JSON.parse(readFileSync(configPath, "utf-8"));
+      if (cfg.agent_id) agentId = cfg.agent_id;
+      if (cfg.api_url) process.env.LOTA_API_URL = cfg.api_url;
+      if (cfg.service_key) process.env.LOTA_SERVICE_KEY = cfg.service_key;
+      if (cfg.work_dir) workDir = resolve(cfg.work_dir);
+      if (cfg.model) model = cfg.model;
+      if (cfg.poll_interval) pollInterval = cfg.poll_interval;
+      if (cfg.webhook_port) webhookPort = cfg.webhook_port;
+      if (cfg.webhook_host) webhookHost = cfg.webhook_host;
+      if (cfg.public_url) publicUrl = cfg.public_url;
+      if (cfg.skip_plan) skipPlan = cfg.skip_plan;
+      if (cfg.mcp_server_path) mcpServerPath = cfg.mcp_server_path;
+    } catch (e) {
+      console.error(`Failed to parse config file: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  }
+
+  // CLI args override config file
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case "--agent-id":
@@ -64,6 +115,12 @@ function parseArgs(): RunnerConfig {
       case "--public-url":
         publicUrl = args[++i];
         break;
+      case "--skip-plan":
+        skipPlan = true;
+        break;
+      case "--config":
+        i++; // already handled
+        break;
     }
   }
 
@@ -71,15 +128,34 @@ function parseArgs(): RunnerConfig {
   const serviceKey = process.env.LOTA_SERVICE_KEY || "";
 
   if (!agentId) {
-    console.error("Usage: node dist/runner.js --agent-id <id> [--poll-interval <ms>] [--work-dir <path>] [--model <model>] [--webhook-port <port>] [--webhook-host <host>] [--public-url <url>]");
+    console.error(`Usage: node dist/runner.js --config agent.json
+   or: node dist/runner.js --agent-id <id> [options]
+
+Options:
+  --config <path>        JSON config file (recommended)
+  --agent-id <id>        Agent ID
+  --work-dir <path>      Working directory (default: cwd)
+  --model <model>        Claude model (default: sonnet)
+  --poll-interval <ms>   Poll interval (default: 15000)
+  --webhook-port <port>  Webhook port (default: 9100)
+  --webhook-host <host>  Webhook host (default: 0.0.0.0)
+  --public-url <url>     Public webhook URL
+  --skip-plan            Skip planning phase, go straight to execution
+
+Env vars: LOTA_API_URL, LOTA_SERVICE_KEY`);
     process.exit(1);
   }
   if (!serviceKey) {
-    console.error("Error: LOTA_SERVICE_KEY environment variable is required");
+    console.error("Error: LOTA_SERVICE_KEY is required (env var or config file)");
     process.exit(1);
   }
 
-  return { agentId, pollInterval, workDir, model, apiUrl, serviceKey, webhookPort, webhookHost, publicUrl };
+  // Default mcp_server_path to dist/index.js relative to this package
+  if (!mcpServerPath) {
+    mcpServerPath = join(import.meta.dirname, "index.js");
+  }
+
+  return { agentId, pollInterval, workDir, model, apiUrl, serviceKey, webhookPort, webhookHost, publicUrl, skipPlan, mcpServerPath };
 }
 
 // ── State ───────────────────────────────────────────────────────────
@@ -87,6 +163,7 @@ function parseArgs(): RunnerConfig {
 let config: RunnerConfig;
 let api: LotaApiClient;
 let currentTask: Task | null = null;
+let currentPhase: "plan" | "execute" | null = null;
 let currentProcess: ChildProcess | null = null;
 const processedTaskIds = new Set<string>();
 let lastMessageTimestamp: string;
@@ -119,12 +196,18 @@ async function updateTaskStatus(taskId: string, status: string): Promise<void> {
 }
 
 async function submitReport(taskId: string, output: string): Promise<void> {
-  // Extract a summary from the output (last 500 chars or less)
   const summary = output.length > 500 ? output.slice(-500) : output;
   await api.post("/api/reports", {
     task_id: taskId,
     agent_id: config.agentId,
     summary,
+  });
+}
+
+async function postComment(taskId: string, content: string): Promise<void> {
+  await api.post(`/api/tasks/${taskId}/comments`, {
+    agent_id: config.agentId,
+    content,
   });
 }
 
@@ -142,13 +225,44 @@ function buildSystemPrompt(): string {
   return [
     `You are agent "${config.agentId}" on the LOTA platform.`,
     `You have access to LOTA MCP tools for task management, reporting, and messaging.`,
-    `When you finish your work, you MUST call submit_report with the task_id to mark it complete.`,
     `Your agent_id is "${config.agentId}" — use it when calling tools that accept agent_id.`,
     `Work directory: ${config.workDir}`,
   ].join("\n");
 }
 
-function buildTaskPrompt(task: Task): string {
+function buildPlanPrompt(task: Task): string {
+  const parts = [
+    `# Task: ${task.title}`,
+    `Task ID: ${task.id}`,
+    `Priority: ${task.priority}`,
+  ];
+
+  if (task.brief) {
+    parts.push("", "## Brief", task.brief);
+  }
+
+  parts.push(
+    "",
+    "## Your Job: Create a Technical Plan",
+    "",
+    "You are in the PLANNING phase. Do NOT write any code yet.",
+    "",
+    "1. Read and understand the task brief above.",
+    "2. Explore the codebase to understand the current state.",
+    "3. Create a technical plan by calling `save_task_plan` with:",
+    `   - id: "${task.id}"`,
+    "   - goals: list of concrete goals (title + completed: false)",
+    "   - affected_files: files that will need changes",
+    "   - estimated_effort: 'low', 'medium', or 'high'",
+    "   - notes: approach, trade-offs, anything relevant",
+    "",
+    "IMPORTANT: Only call save_task_plan. Do NOT write code, do NOT call submit_report.",
+  );
+
+  return parts.join("\n");
+}
+
+function buildExecutePrompt(task: Task): string {
   const parts = [
     `# Task: ${task.title}`,
     `Task ID: ${task.id}`,
@@ -161,11 +275,11 @@ function buildTaskPrompt(task: Task): string {
 
   if (task.technical_plan) {
     const plan = task.technical_plan;
-    parts.push("", "## Technical Plan");
+    parts.push("", "## Technical Plan (approved)");
     if (plan.goals.length > 0) {
       parts.push("### Goals");
       for (const g of plan.goals) {
-        parts.push(`- [${g.completed ? "x" : " "}] ${g.title}`);
+        parts.push(`- [ ] ${g.title}`);
       }
     }
     if (plan.affected_files.length > 0) {
@@ -181,13 +295,15 @@ function buildTaskPrompt(task: Task): string {
 
   parts.push(
     "",
-    "## Instructions",
-    "1. Read and understand the task above.",
-    "2. Do the work described in the brief/plan.",
-    "3. When finished, call the `submit_report` tool with:",
+    "## Your Job: Execute the Plan",
+    "",
+    "You are in the EXECUTION phase. The plan above has been approved.",
+    "",
+    "1. Implement each goal in the plan.",
+    "2. When finished, call `submit_report` with:",
     `   - task_id: "${task.id}"`,
     `   - agent_id: "${config.agentId}"`,
-    "   - summary: a brief summary of what you did",
+    "   - summary: what you did",
     "   - deliverables, new_files, modified_files as appropriate",
   );
 
@@ -202,7 +318,7 @@ function writeTempMcpConfig(): string {
     mcpServers: {
       lota: {
         command: "node",
-        args: [join(config.workDir, "dist/index.js")],
+        args: [config.mcpServerPath],
         env: {
           LOTA_API_URL: config.apiUrl,
           LOTA_SERVICE_KEY: config.serviceKey,
@@ -235,7 +351,7 @@ function spawnClaude(prompt: string, mcpConfigPath: string): Promise<{ code: num
       prompt,
     ];
 
-    log.info(`Spawning: claude ${args.slice(0, 3).join(" ")} ...`);
+    log.info(`Spawning claude (${currentPhase || "task"})...`);
 
     // Remove Claude Code session env vars to avoid nested session errors
     const cleanEnv = { ...process.env };
@@ -280,7 +396,7 @@ function spawnClaude(prompt: string, mcpConfigPath: string): Promise<{ code: num
   });
 }
 
-// ── Task executor ───────────────────────────────────────────────────
+// ── Two-phase task executor ─────────────────────────────────────────
 
 async function executeTask(task: Task): Promise<void> {
   if (processedTaskIds.has(task.id)) return;
@@ -291,51 +407,95 @@ async function executeTask(task: Task): Promise<void> {
 
   processedTaskIds.add(task.id);
   currentTask = task;
-  log.info(`Starting task: ${task.id} — ${task.title}`);
-
-  try {
-    await updateTaskStatus(task.id, "in_progress");
-  } catch (e) {
-    log.error(`Failed to update task status: ${(e as Error).message}`);
-  }
+  log.info(`━━━ Task: ${task.id} — ${task.title} ━━━`);
 
   const mcpConfigPath = writeTempMcpConfig();
 
   try {
-    const prompt = buildTaskPrompt(task);
-    const result = await spawnClaude(prompt, mcpConfigPath);
+    // ── Phase 1: Plan ────────────────────────────────────────────
+    if (!config.skipPlan && !task.technical_plan) {
+      currentPhase = "plan";
+      log.info(`[Phase 1/2] Planning...`);
 
-    if (result.code === 0) {
-      log.info(`Task ${task.id} subprocess exited successfully`);
-      // Submit completion report
       try {
-        await submitReport(task.id, result.stdout);
-        log.info(`Task ${task.id} report submitted, status set to completed`);
+        await postComment(task.id, "Starting planning phase...");
+      } catch { /* ignore */ }
+
+      const planResult = await spawnClaude(buildPlanPrompt(task), mcpConfigPath);
+
+      if (planResult.code !== 0) {
+        log.error(`Planning failed (exit code ${planResult.code})`);
+        try {
+          await postComment(task.id, `Planning phase failed (exit ${planResult.code})`);
+        } catch { /* ignore */ }
+        currentPhase = null;
+        currentTask = null;
+        return;
+      }
+
+      log.info(`Planning complete, fetching updated task...`);
+
+      // Re-fetch task to get the saved plan
+      try {
+        task = await fetchTask(task.id);
+        currentTask = task;
       } catch (e) {
-        log.error(`Failed to submit report for task ${task.id}: ${(e as Error).message}`);
-        // Fallback: at least mark as completed
+        log.error(`Failed to re-fetch task: ${(e as Error).message}`);
+      }
+
+      if (!task.technical_plan) {
+        log.warn(`Agent did not save a plan. Proceeding to execution anyway.`);
+      } else {
+        log.info(`Plan saved: ${task.technical_plan.goals.length} goals, effort: ${task.technical_plan.estimated_effort}`);
+      }
+    } else if (task.technical_plan) {
+      log.info(`Plan already exists, skipping to execution.`);
+    } else {
+      log.info(`--skip-plan enabled, skipping to execution.`);
+    }
+
+    // ── Phase 2: Execute ─────────────────────────────────────────
+    currentPhase = "execute";
+    log.info(`[Phase 2/2] Executing...`);
+
+    try {
+      await updateTaskStatus(task.id, "in_progress");
+    } catch (e) {
+      log.error(`Failed to update task status: ${(e as Error).message}`);
+    }
+
+    try {
+      await postComment(task.id, "Starting execution phase...");
+    } catch { /* ignore */ }
+
+    const execResult = await spawnClaude(buildExecutePrompt(task), mcpConfigPath);
+
+    if (execResult.code === 0) {
+      log.info(`Execution complete.`);
+      try {
+        await submitReport(task.id, execResult.stdout);
+        log.info(`Report submitted, task completed.`);
+      } catch (e) {
+        log.error(`Failed to submit report: ${(e as Error).message}`);
         try {
           await updateTaskStatus(task.id, "completed");
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore */ }
       }
     } else {
-      log.error(`Task ${task.id} subprocess exited with code ${result.code}`);
-      // Try to notify about failure
+      log.error(`Execution failed (exit code ${execResult.code})`);
       try {
+        await postComment(task.id, `Execution failed (exit ${execResult.code})`);
         if (task.delegated_from) {
           await sendMessage(
             task.delegated_from,
-            `Task "${task.title}" (${task.id}) failed — subprocess exited with code ${result.code}`
+            `Task "${task.title}" (${task.id}) failed — exit code ${execResult.code}`
           );
         }
-      } catch {
-        // ignore notification errors
-      }
+      } catch { /* ignore */ }
     }
   } finally {
     cleanupMcpConfig(mcpConfigPath);
+    currentPhase = null;
     currentTask = null;
   }
 }
@@ -376,7 +536,7 @@ async function handleMessage(message: Message): Promise<void> {
   if (content === "status" || content === "what are you doing") {
     try {
       const reply = currentTask
-        ? `Working on task ${currentTask.id}: "${currentTask.title}"`
+        ? `Working on task ${currentTask.id}: "${currentTask.title}" (phase: ${currentPhase})`
         : "Idle, waiting for tasks.";
       if (message.sender_id) {
         await sendMessage(message.sender_id, reply);
@@ -393,14 +553,14 @@ async function handleMessage(message: Message): Promise<void> {
 // ── Poll functions ──────────────────────────────────────────────────
 
 async function pollForTasks(): Promise<void> {
-  if (currentTask) return; // busy
+  if (currentTask) return;
 
   try {
     const tasks = await fetchAssignedTasks();
     for (const task of tasks) {
       if (!processedTaskIds.has(task.id)) {
         await executeTask(task);
-        break; // one at a time
+        break;
       }
     }
   } catch (e) {
@@ -413,7 +573,6 @@ async function pollForMessages(): Promise<void> {
     const messages = await fetchMessages();
     for (const msg of messages) {
       await handleMessage(msg);
-      // Update timestamp to the latest message we've seen
       if (msg.created_at > lastMessageTimestamp) {
         lastMessageTimestamp = msg.created_at;
       }
@@ -436,19 +595,16 @@ function setupShutdownHandlers(): void {
     shuttingDown = true;
     log.info(`Received ${signal}, shutting down...`);
 
-    // Close webhook server
     if (webhookServer) {
       webhookServer.close();
       webhookServer = null;
     }
 
-    // Wake up the sleep so the main loop can exit
     wakeUp();
 
     if (currentProcess) {
       log.info("Waiting for active subprocess to finish...");
       currentProcess.kill("SIGTERM");
-      // Give it 30s to finish
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {
           if (currentProcess) {
@@ -481,9 +637,7 @@ function setupShutdownHandlers(): void {
 async function main(): Promise<void> {
   config = parseArgs();
 
-  // Create API client with runner credentials
   api = new LotaApiClient();
-  // The constructor reads env vars, but we set agentId explicitly
   api.setAgentId(config.agentId);
 
   lastMessageTimestamp = new Date().toISOString();
@@ -491,15 +645,16 @@ async function main(): Promise<void> {
   setupShutdownHandlers();
 
   log.info("╔══════════════════════════════════════╗");
-  log.info("║       LOTA Agent Runner Started      ║");
+  log.info("║       LOTA Agent Runner v2.0         ║");
   log.info("╚══════════════════════════════════════╝");
-  log.info(`Agent:    ${config.agentId}`);
-  log.info(`API:      ${config.apiUrl}`);
-  log.info(`Work dir: ${config.workDir}`);
-  log.info(`Model:    ${config.model}`);
-  log.info(`Poll:     ${config.pollInterval}ms`);
-  log.info(`Webhook:  ${config.webhookHost}:${config.webhookPort}`);
-  if (config.publicUrl) log.info(`Public:   ${config.publicUrl}`);
+  log.info(`Agent:     ${config.agentId}`);
+  log.info(`API:       ${config.apiUrl}`);
+  log.info(`Work dir:  ${config.workDir}`);
+  log.info(`Model:     ${config.model}`);
+  log.info(`Poll:      ${config.pollInterval}ms`);
+  log.info(`Planning:  ${config.skipPlan ? "disabled" : "enabled"}`);
+  log.info(`Webhook:   ${config.webhookHost}:${config.webhookPort}`);
+  if (config.publicUrl) log.info(`Public:    ${config.publicUrl}`);
   log.info("");
 
   // Verify connectivity
@@ -561,12 +716,16 @@ function startWebhookServer(host: string, port: number): Server {
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
-        // Wake up the poll loop immediately
         wakeUp();
       });
     } else if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", agent: config.agentId, busy: !!currentTask }));
+      res.end(JSON.stringify({
+        status: "ok",
+        agent: config.agentId,
+        busy: !!currentTask,
+        phase: currentPhase,
+      }));
     } else {
       res.writeHead(404);
       res.end();
