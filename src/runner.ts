@@ -281,14 +281,14 @@ function buildPlanPrompt(task: Task): string {
     "",
     "1. Read and understand the task brief above.",
     "2. Explore the codebase to understand the current state.",
-    "3. Create a technical plan by calling `save_task_plan` with:",
+    "3. Create a technical plan by calling `plan` with:",
     `   - id: "${task.id}"`,
     "   - goals: list of concrete goals (title + completed: false)",
     "   - affected_files: files that will need changes",
     "   - estimated_effort: 'low', 'medium', or 'high'",
     "   - notes: approach, trade-offs, anything relevant",
     "",
-    "IMPORTANT: Only call save_task_plan. Do NOT write code, do NOT call submit_report.",
+    "IMPORTANT: Only call plan. Do NOT write code, do NOT call complete.",
   );
 
   return parts.join("\n");
@@ -332,11 +332,10 @@ function buildExecutePrompt(task: Task): string {
     "You are in the EXECUTION phase. The plan above has been approved.",
     "",
     "1. Implement each goal in the plan.",
-    "2. When finished, call `submit_report` with:",
-    `   - task_id: "${task.id}"`,
-    `   - agent_id: "${config.agentId}"`,
+    "2. When finished, call `complete` with:",
+    `   - id: "${task.id}"`,
     "   - summary: what you did",
-    "   - deliverables, new_files, modified_files as appropriate",
+    "   - files_modified, files_created as appropriate",
   );
 
   return parts.join("\n");
@@ -375,25 +374,26 @@ function cleanupMcpConfig(configPath: string): void {
 
 // Tools allowed per phase
 const PLAN_TOOLS = [
-  "mcp__lota__save_task_plan",
-  "mcp__lota__post_comment",
-  "mcp__lota__get_task",
+  "mcp__lota__plan",
+  "mcp__lota__message",
+  "mcp__lota__task",
   "Read", "Glob", "Grep", "Bash",
 ];
 
 const EXECUTE_TOOLS = [
-  "mcp__lota__submit_report",
-  "mcp__lota__post_comment",
-  "mcp__lota__get_task",
+  "mcp__lota__complete",
+  "mcp__lota__message",
+  "mcp__lota__task",
+  "mcp__lota__status",
   "Read", "Glob", "Grep", "Bash",
   "Edit", "Write",
 ];
 
 const CHAT_TOOLS = [
-  "mcp__lota__send_message",
-  "mcp__lota__post_comment",
-  "mcp__lota__get_task",
-  "mcp__lota__list_tasks",
+  "mcp__lota__message",
+  "mcp__lota__messages",
+  "mcp__lota__task",
+  "mcp__lota__tasks",
   "Read", "Glob", "Grep", "Bash",
 ];
 
@@ -403,6 +403,7 @@ function spawnClaude(prompt: string, mcpConfigPath: string): Promise<{ code: num
 
     const args = [
       "--print",
+      "--dangerously-skip-permissions",
       "--model", config.model,
       "--mcp-config", mcpConfigPath,
       "--system-prompt", buildSystemPrompt(),
@@ -618,9 +619,9 @@ async function handleMessage(message: Message): Promise<void> {
       `You received a direct message from agent "${message.sender_id}".`,
       `Message: "${message.content.trim()}"`,
       "",
-      "Read and understand the message, then reply using send_message.",
+      "Read and understand the message, then reply using `message` tool.",
       `Your agent_id is "${config.agentId}".`,
-      `Reply to receiver_agent_id: "${message.sender_id}"`,
+      `Reply with: message(to="${message.sender_id}", content="your reply")`,
       "Keep your reply concise and helpful.",
     ].join("\n");
 
