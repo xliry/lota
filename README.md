@@ -107,3 +107,10 @@ The LOTA MCP project consists of four main components:
 - **Tools** (`src/tools/`) — Organized into two categories:
   - *Protocol tools* (`task`, `plan`, `complete`, `status`, `message`, `messages`, `tasks`, `whoami`) — the core agent workflow primitives used during task execution.
   - *Admin tools* (`create_task`, `assign_task`, `list_tasks`, `update_task`, `list_members`, etc.) — task and team management utilities for orchestrators and team leads.
+
+## Contributing
+
+1. Fork & clone the repository
+2. `npm install && npm run build`
+3. Create a branch, make your changes
+4. Open a PR against `main`
