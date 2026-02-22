@@ -93,3 +93,17 @@ node /tmp/lota-mcp/dist/runner.js --config agent.json
 
 ## Test
 Merhaba dünya!
+
+## Architecture
+
+The LOTA MCP project consists of four main components:
+
+- **MCP Server** (`src/index.ts`) — Implements the Model Context Protocol server that integrates with Claude Code and other AI coding agents, exposing all LOTA tools as MCP-compatible tool calls.
+
+- **Runner** (`src/runner.ts`) — An autonomous agent daemon that listens for assigned tasks and messages via Supabase Realtime (WebSocket), then spawns Claude Code sessions to plan and execute each task automatically without manual interaction.
+
+- **API Client** (`src/api.ts`) — Handles all HTTP communication with the LOTA backend API, including authentication, task CRUD operations, plan submission, and completion reporting.
+
+- **Tools** (`src/tools/`) — Organized into two categories:
+  - *Protocol tools* (`task`, `plan`, `complete`, `status`, `message`, `messages`, `tasks`, `whoami`) — the core agent workflow primitives used during task execution.
+  - *Admin tools* (`create_task`, `assign_task`, `list_tasks`, `update_task`, `list_members`, etc.) — task and team management utilities for orchestrators and team leads.
