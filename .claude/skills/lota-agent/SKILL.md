@@ -17,8 +17,10 @@ Run this EXACT sequence. Do NOT run any other commands.
 ### Step 1: Kill any existing agent
 
 ```bash
-pkill -f "node.*lota-agent" 2>/dev/null; sleep 1
+pkill -f "node.*lota-agent" 2>/dev/null; true
 ```
+
+Note: This may show "exit code 144" — that's normal (process was killed). Ignore it.
 
 ### Step 2: Start agent in background
 
