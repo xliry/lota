@@ -99,28 +99,68 @@ const dim = (msg: string) => out(`${PRE} \x1b[90m${time()} ${msg}\x1b[0m`, `[${t
 const err = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${msg}\x1b[0m`, `[${time()}] ✗ ${msg}`);
 const warn = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[33m⚠ ${msg}\x1b[0m`, `[${time()}] ⚠ ${msg}`);
 
+// ── Pre-check (zero-cost, no LLM) ──────────────────────────────
+
+interface WorkData {
+  tasks: { id: string; title?: string; brief?: string; status: string; plan?: unknown }[];
+  messages: { id: string; content: string; sender: { agent_id: string; name?: string }; created_at: string; read?: boolean }[];
+}
+
+async function checkForWork(config: AgentConfig): Promise<WorkData> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-service-key": config.serviceKey,
+  };
+
+  const [tasksRes, msgsRes] = await Promise.all([
+    fetch(`${config.apiUrl}/api/tasks?agentId=${config.agentId}&status=assigned`, { headers }),
+    fetch(`${config.apiUrl}/api/messages?agentId=${config.agentId}`, { headers }),
+  ]);
+
+  const tasks = tasksRes.ok ? await tasksRes.json() as WorkData["tasks"] : [];
+  const allMsgs = msgsRes.ok ? await msgsRes.json() as WorkData["messages"] : [];
+  const messages = allMsgs.filter(m => !m.read);
+
+  return { tasks, messages };
+}
+
 // ── Prompt ──────────────────────────────────────────────────────
 
-function buildPrompt(agentId: string): string {
-  return [
+function buildPrompt(agentId: string, work: WorkData): string {
+  const lines = [
     `You are autonomous LOTA agent "${agentId}". Use the lota() MCP tool for all API calls.`,
-    "",
-    "STEP 1 — MESSAGES:",
-    `  lota("GET", "/api/messages?agentId=${agentId}") to check DMs.`,
-    `  Reply: lota("POST", "/api/messages", {"sender_agent_id":"${agentId}", "receiver_agent_id":"<their_agent_id>", "content":"..."})`,
-    "  Note: messages include sender.agent_id — use that value as receiver_agent_id when replying.",
-    "",
-    "STEP 2 — TASKS:",
-    `  lota("GET", "/api/tasks?agentId=${agentId}&status=assigned") to check tasks.`,
-    "  If no assigned tasks, say 'No assigned tasks.' and stop.",
-    "  For each assigned task:",
-    '    a. lota("GET", "/api/tasks/<id>") — read details',
-    '    b. If no plan: lota("PUT", "/api/tasks/<id>/plan", {"goals":[{"title":"...","completed":false}], "affected_files":[], "estimated_effort":"low|medium|high", "notes":"..."})',
-    `    c. lota("PATCH", "/api/tasks/<id>/status", {"status":"in_progress"})`,
-    "    d. Execute: read files, write code, run tests",
-    `    e. lota("POST", "/api/reports", {"task_id":"<id>", "agent_id":"${agentId}", "summary":"...", "modified_files":[], "new_files":[]})`,
-    "  Move to the next task if any remain.",
-  ].join("\n");
+  ];
+
+  // Messages — data already fetched, embed in prompt
+  if (work.messages.length) {
+    lines.push("", "── UNREAD MESSAGES ──");
+    for (const m of work.messages) {
+      lines.push(`  From agent "${m.sender.agent_id}" (${m.sender.name || "unknown"}): ${m.content}`);
+    }
+    lines.push(
+      `  Reply: lota("POST", "/api/messages", {"sender_agent_id":"${agentId}", "receiver_agent_id":"<their_agent_id>", "content":"..."})`,
+      "  Use the sender's agent_id as receiver_agent_id when replying.",
+    );
+  }
+
+  // Tasks — data already fetched, embed in prompt
+  if (work.tasks.length) {
+    lines.push("", "── ASSIGNED TASKS ──");
+    for (const t of work.tasks) {
+      lines.push(`  Task "${t.id}": ${t.title || "(untitled)"}${t.brief ? ` — ${t.brief}` : ""}`);
+    }
+    lines.push(
+      "",
+      "  For each task:",
+      `    a. lota("GET", "/api/tasks/<id>") — read full details if needed`,
+      `    b. If no plan: lota("PUT", "/api/tasks/<id>/plan", {"goals":[{"title":"...","completed":false}], "affected_files":[], "estimated_effort":"low|medium|high", "notes":"..."})`,
+      `    c. lota("PATCH", "/api/tasks/<id>/status", {"status":"in_progress"})`,
+      "    d. Execute: read files, write code, run tests",
+      `    e. lota("POST", "/api/reports", {"task_id":"<id>", "agent_id":"${agentId}", "summary":"...", "modified_files":[], "new_files":[]})`,
+    );
+  }
+
+  return lines.join("\n");
 }
 
 // ── Claude subprocess ───────────────────────────────────────────
@@ -128,7 +168,7 @@ function buildPrompt(agentId: string): string {
 let currentProcess: ChildProcess | null = null;
 let busy = false;
 
-function runClaude(config: AgentConfig): Promise<number> {
+function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
   if (busy) {
     dim("Already running, skipping...");
     return Promise.resolve(0);
@@ -149,7 +189,7 @@ function runClaude(config: AgentConfig): Promise<number> {
       "--dangerously-skip-permissions",
       "--model", config.model,
       "--mcp-config", config.configPath,
-      "-p", buildPrompt(config.agentId),
+      "-p", buildPrompt(config.agentId, work),
     ], {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: process.cwd(),
@@ -337,16 +377,37 @@ async function main() {
 
   // Main loop
   while (!stopped) {
-    log("Checking for tasks...");
-    console.log("  ─────────────────────────────────────");
+    log("Checking for work...");
 
-    const code = await runClaude(config);
+    // Pre-check: fetch tasks + messages without spawning Claude
+    let work: WorkData;
+    try {
+      work = await checkForWork(config);
+    } catch (e) {
+      err(`Pre-check failed: ${(e as Error).message}`);
+      if (config.once) break;
+      await sleep(config.interval);
+      continue;
+    }
 
-    console.log("  ─────────────────────────────────────");
-    if (code === 0) {
-      ok("Cycle complete.");
+    const taskCount = work.tasks.length;
+    const msgCount = work.messages.length;
+
+    if (taskCount === 0 && msgCount === 0) {
+      // Nothing to do — skip Claude spawn entirely
+      dim(`No pending work (0 tasks, 0 messages) — skipped Claude spawn`);
     } else {
-      err(`Claude exited with code ${code}`);
+      ok(`Found work: ${taskCount} task(s), ${msgCount} message(s)`);
+      console.log("  ─────────────────────────────────────");
+
+      const code = await runClaude(config, work);
+
+      console.log("  ─────────────────────────────────────");
+      if (code === 0) {
+        ok("Cycle complete.");
+      } else {
+        err(`Claude exited with code ${code}`);
+      }
     }
 
     if (config.once) break;
