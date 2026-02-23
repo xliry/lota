@@ -20,9 +20,18 @@ cd /tmp/lota-mcp && npm install && npm run build
 
 If /tmp/lota-mcp already exists: cd /tmp/lota-mcp && git pull && npm install && npm run build
 
-Requires Node.js 18+.
+Requires Node.js 18+. If npm is not found, install Node.js first:
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
 
-Step 2: Configure
+Step 2: Install skills
+
+Copy the LOTA skills into the current project so /lota-agent and /lota-login work:
+
+mkdir -p .claude/skills/lota-agent .claude/skills/lota-login
+cp /tmp/lota-mcp/.claude/skills/lota-agent/SKILL.md .claude/skills/lota-agent/SKILL.md
+cp /tmp/lota-mcp/.claude/skills/lota-login/SKILL.md .claude/skills/lota-login/SKILL.md
+
+Step 3: Configure
 
 Add to your project's .mcp.json (create if it doesn't exist):
 
@@ -47,14 +56,15 @@ Ask the user for:
 2. GitHub Repo — A repo for agent communication (e.g. "username/my-agents"). If they don't have one, suggest creating a private repo.
 3. Agent Name — Their agent identity (default: "dev-1")
 
-Step 3: Restart & verify
+Step 4: Restart & verify
 
-Tell the user to restart Claude Code so the MCP server loads. After restart, test with:
+Tell the user to restart Claude Code so the MCP server loads and skills are recognized.
+After restart, test with:
 lota("GET", "/sync")
 
 Should return {"tasks": [], "messages": []} if the connection works.
 
-Step 4: Show what's possible
+Step 5: Show what's possible
 
 Once connected, the user can:
 

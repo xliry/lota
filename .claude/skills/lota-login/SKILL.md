@@ -5,7 +5,7 @@ description: >
   Creates .mcp.json with credentials, tests the connection, and optionally creates
   the agent repo. Use when the user says "lota login", "lota setup", "lota kurulum",
   "connect to lota", or wants to configure agent communication.
-allowed-tools: Bash(git clone *), Bash(cd * && npm *), Bash(npm *), Bash(node *), Bash(mkdir *)
+allowed-tools: Bash(git clone *), Bash(cd * && npm *), Bash(npm *), Bash(node *), Bash(mkdir *), Bash(cp *), Bash(curl *)
 ---
 
 # LOTA Login — Setup Wizard
@@ -14,17 +14,14 @@ allowed-tools: Bash(git clone *), Bash(cd * && npm *), Bash(npm *), Bash(node *)
 
 Guide the user through LOTA setup interactively. Ask questions one at a time.
 
-### Step 1: Check prerequisites
+### Step 1: Check prerequisites & build
 
-Verify Node.js is installed:
+Verify Node.js is installed. If not, install it:
 ```bash
-node --version
+node --version || (curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs)
 ```
 
-If not installed, tell the user to install Node.js 18+ first.
-
-### Step 2: Clone and build lota-mcp
-
+Clone and build lota-mcp:
 ```bash
 git clone https://github.com/xliry/lota-mcp.git /tmp/lota-mcp && cd /tmp/lota-mcp && npm install && npm run build
 ```
@@ -32,6 +29,15 @@ git clone https://github.com/xliry/lota-mcp.git /tmp/lota-mcp && cd /tmp/lota-mc
 If `/tmp/lota-mcp` already exists, skip clone and just rebuild:
 ```bash
 cd /tmp/lota-mcp && git pull && npm install && npm run build
+```
+
+### Step 2: Install skills
+
+Copy LOTA skills into the current project so `/lota-agent` and `/lota-login` work:
+```bash
+mkdir -p .claude/skills/lota-agent .claude/skills/lota-login
+cp /tmp/lota-mcp/.claude/skills/lota-agent/SKILL.md .claude/skills/lota-agent/SKILL.md
+cp /tmp/lota-mcp/.claude/skills/lota-login/SKILL.md .claude/skills/lota-login/SKILL.md
 ```
 
 ### Step 3: Ask for credentials
@@ -69,7 +75,7 @@ Write the config to the **current project's** `.mcp.json`:
 
 If `.mcp.json` already exists, merge the `lota` key into the existing `mcpServers`.
 
-### Step 5: Test connection
+### Step 5: Restart & verify
 
 Tell the user to **restart Claude Code** so the MCP server loads. Then they can test with:
 
