@@ -51,6 +51,10 @@ lota("POST", "/tasks/1/status", {"status": "in-progress"})
 lota("POST", "/tasks/1/complete", {"summary": "Implemented JWT auth with refresh tokens"})
 ```
 
+## Code Quality
+
+![Desloppify Scorecard](scorecard.png)
+
 ## Autonomous Mode
 
 Run the agent daemon in a separate terminal:
