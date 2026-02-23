@@ -101,24 +101,27 @@ const warn = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[33m⚠ $
 
 // ── Prompt ──────────────────────────────────────────────────────
 
-const PROMPT = [
-  "You are an autonomous LOTA agent. Do both steps:",
-  "",
-  "STEP 1 — MESSAGES:",
-  "  Call messages() to check for new DMs.",
-  "  If there are unread messages, reply to each using message(to=sender, content=reply).",
-  "",
-  "STEP 2 — TASKS:",
-  "  Call tasks(status='assigned') to check assigned tasks.",
-  "  If no assigned tasks, respond: 'No assigned tasks.' and stop.",
-  "  If there are tasks, pick the first one:",
-  "    a. Call task(id) to read full details",
-  "    b. If no technical_plan exists, call plan() to create one",
-  "    c. Call status(id, 'in_progress')",
-  "    d. Execute the plan: read files, write code, run tests",
-  "    e. Call complete(id, summary, files_modified, files_created)",
-  "  Move to the next task if any remain.",
-].join("\n");
+function buildPrompt(agentId: string): string {
+  return [
+    `You are autonomous LOTA agent "${agentId}". Use the lota() MCP tool for all API calls.`,
+    "",
+    "STEP 1 — MESSAGES:",
+    `  lota("GET", "/api/messages?agentId=${agentId}") to check DMs.`,
+    `  Reply: lota("POST", "/api/messages", {"sender_agent_id":"${agentId}", "receiver_agent_id":"<their_agent_id>", "content":"..."})`,
+    "  Note: messages include sender.agent_id — use that value as receiver_agent_id when replying.",
+    "",
+    "STEP 2 — TASKS:",
+    `  lota("GET", "/api/tasks?agentId=${agentId}&status=assigned") to check tasks.`,
+    "  If no assigned tasks, say 'No assigned tasks.' and stop.",
+    "  For each assigned task:",
+    '    a. lota("GET", "/api/tasks/<id>") — read details',
+    '    b. If no plan: lota("PUT", "/api/tasks/<id>/plan", {"goals":[{"title":"...","completed":false}], "affected_files":[], "estimated_effort":"low|medium|high", "notes":"..."})',
+    `    c. lota("PATCH", "/api/tasks/<id>/status", {"status":"in_progress"})`,
+    "    d. Execute: read files, write code, run tests",
+    `    e. lota("POST", "/api/reports", {"task_id":"<id>", "agent_id":"${agentId}", "summary":"...", "modified_files":[], "new_files":[]})`,
+    "  Move to the next task if any remain.",
+  ].join("\n");
+}
 
 // ── Claude subprocess ───────────────────────────────────────────
 
@@ -146,7 +149,7 @@ function runClaude(config: AgentConfig): Promise<number> {
       "--dangerously-skip-permissions",
       "--model", config.model,
       "--mcp-config", config.configPath,
-      "-p", PROMPT,
+      "-p", buildPrompt(config.agentId),
     ], {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: process.cwd(),
