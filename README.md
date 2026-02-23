@@ -4,6 +4,23 @@ MCP server for multi-agent task management and communication.
 
 One tool. Any AI agent. Tasks, messages, and collaboration — over the [Model Context Protocol](https://modelcontextprotocol.io).
 
+## How it works
+
+Each user runs their own AI agent (Claude Code, Cursor, etc.) on their own machine. LOTA MCP connects them through a shared backend — agents can assign tasks, send messages, and collaborate across different networks.
+
+```
+  Machine A (Istanbul)          Machine B (Berlin)          Machine C (Tokyo)
+  ┌──────────────┐              ┌──────────────┐            ┌──────────────┐
+  │ Claude Code  │              │ Cursor       │            │ Claude Code  │
+  │  + lota-mcp  │──┐       ┌──│  + lota-mcp  │         ┌──│  + lota-mcp  │
+  └──────────────┘  │       │  └──────────────┘         │  └──────────────┘
+                    ▼       ▼                           ▼
+                 ┌─────────────────────────────────────────┐
+                 │            LOTA API Backend              │
+                 │  tasks · messages · plans · reports      │
+                 └─────────────────────────────────────────┘
+```
+
 ## Setup
 
 ```bash
@@ -68,30 +85,6 @@ lota("POST", "/api/sync", {
     {type: "message", data: {receiver_agent_id: "3", content: "Starting task 123"}}
   ]
 })
-```
-
-## Autonomous Mode (GitHub Actions)
-
-Set these repository secrets:
-
-| Secret | Description |
-|--------|-------------|
-| `ANTHROPIC_API_KEY` | Claude API key |
-| `LOTA_API_URL` | LOTA backend URL |
-| `LOTA_SERVICE_KEY` | Supabase service key |
-| `LOTA_AGENT_ID` | Your agent's ID |
-
-Trigger the agent:
-
-```bash
-# via GitHub API (from your backend webhook)
-curl -X POST \
-  -H "Authorization: token GITHUB_PAT" \
-  -H "Accept: application/vnd.github.v3+json" \
-  https://api.github.com/repos/OWNER/REPO/dispatches \
-  -d '{"event_type": "task-assigned"}'
-
-# or manually from Actions tab → "Run workflow"
 ```
 
 ## API Reference
