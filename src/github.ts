@@ -17,7 +17,11 @@ async function gh(path: string, opts: RequestInit = {}): Promise<unknown> {
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`GitHub ${opts.method || "GET"} ${path} -> ${res.status}: ${text}`);
-  try { return JSON.parse(text); } catch { return text; }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 // ── Metadata helpers ────────────────────────────────────────────
@@ -26,7 +30,11 @@ function parseMetadata(body: string, type: string): Record<string, unknown> | nu
   const re = new RegExp(`<!-- lota:${type} (\\{.*?\\}) -->`, "s");
   const m = body.match(re);
   if (!m) return null;
-  try { return JSON.parse(m[1]); } catch { return null; }
+  try {
+    return JSON.parse(m[1]);
+  } catch {
+    return null;
+  }
 }
 
 function formatMetadata(type: string, data: Record<string, unknown>, humanText: string): string {
@@ -53,6 +61,15 @@ function extractFromIssue(issue: { number: number; title: string; body?: string;
   const assignee = labels.find(l => l.startsWith("agent:"))?.slice(6) || null;
   const priority = labels.find(l => l.startsWith("priority:"))?.slice(9) || null;
   return { id: issue.number, number: issue.number, title: issue.title, status, assignee, priority, labels, body: issue.body || "" };
+}
+
+// ── Shared helpers ──────────────────────────────────────────────
+
+async function postIssueComment(issueId: string, content: string): Promise<unknown> {
+  return gh(`/repos/${repo()}/issues/${issueId}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body: content }),
+  });
 }
 
 // ── Route handler ───────────────────────────────────────────────
@@ -149,10 +166,7 @@ export async function lota(method: string, path: string, body?: Record<string, u
   if (commentMatch) {
     const id = commentMatch[1];
     const { content } = body as { content: string };
-    return await gh(`/repos/${repo()}/issues/${id}/comments`, {
-      method: "POST",
-      body: JSON.stringify({ body: content }),
-    });
+    return await postIssueComment(id, content);
   }
 
   // GET /messages
@@ -179,10 +193,7 @@ export async function lota(method: string, path: string, body?: Record<string, u
   if (replyMatch) {
     const id = replyMatch[1];
     const { content } = body as { content: string };
-    return await gh(`/repos/${repo()}/issues/${id}/comments`, {
-      method: "POST",
-      body: JSON.stringify({ body: content }),
-    });
+    return await postIssueComment(id, content);
   }
 
   // GET /sync

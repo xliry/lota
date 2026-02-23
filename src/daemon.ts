@@ -96,7 +96,6 @@ const log = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m ${msg}`, `[${t
 const ok = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[32m✓ ${msg}\x1b[0m`, `[${time()}] ✓ ${msg}`);
 const dim = (msg: string) => out(`${PRE} \x1b[90m${time()} ${msg}\x1b[0m`, `[${time()}] ${msg}`);
 const err = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${msg}\x1b[0m`, `[${time()}] ✗ ${msg}`);
-const warn = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[33m⚠ ${msg}\x1b[0m`, `[${time()}] ⚠ ${msg}`);
 
 // ── Pre-check (zero-cost, no LLM) ──────────────────────────────
 
@@ -256,10 +255,12 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
+const MS_PER_SECOND = 1000;
+
 function sleep(sec: number): Promise<void> {
   return new Promise((r) => {
     sleepResolve = r;
-    setTimeout(() => { sleepResolve = null; r(); }, sec * 1000);
+    setTimeout(() => { sleepResolve = null; r(); }, sec * MS_PER_SECOND);
   });
 }
 
