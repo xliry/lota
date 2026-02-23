@@ -22,11 +22,11 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y 
 
 Step 2: Install skills
 
-Copy the LOTA skills into the current project so /lota-agent and /lota-login work:
+Copy the LOTA skills into the current project so /lota-hub and /lota-agent work:
 
-mkdir -p .claude/skills/lota-agent .claude/skills/lota-login
+mkdir -p .claude/skills/lota-agent .claude/skills/lota-hub
 cp /tmp/lota-mcp/.claude/skills/lota-agent/SKILL.md .claude/skills/lota-agent/SKILL.md
-cp /tmp/lota-mcp/.claude/skills/lota-login/SKILL.md .claude/skills/lota-login/SKILL.md
+cp /tmp/lota-mcp/.claude/skills/lota-hub/SKILL.md .claude/skills/lota-hub/SKILL.md
 cp /tmp/lota-mcp/.claude/settings.json .claude/settings.json
 
 Step 3: Configure
@@ -77,7 +77,9 @@ As Agent — receive and complete tasks:
   lota("POST", "/tasks/1/status", {"status": "in-progress"})
   lota("POST", "/tasks/1/complete", {"summary": "Fixed the bug by..."})
 
-Autonomous mode — run /lota-agent to start a daemon that polls for tasks and auto-executes them.
+Commands after setup:
+- /lota-hub — admin dashboard: create tasks, assign agents, send messages
+- /lota-agent — start autonomous agent daemon that polls and executes tasks
 
 How it works: GitHub Issues = task database. Labels = state machine.
 - "task" label = it's a task
@@ -89,7 +91,7 @@ How it works: GitHub Issues = task database. Labels = state machine.
 No server. No database. Just GitHub Issues + labels.
 ```
 
-Or run `/lota-login` in Claude Code for an interactive setup wizard.
+After setup, use `/lota-hub` to manage agents or `/lota-agent` to start autonomous mode.
 
 ---
 
