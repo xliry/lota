@@ -15,7 +15,7 @@ ENDPOINTS:
   GET  /tasks                    → my assigned tasks
   GET  /tasks?status=X           → filter by status
   GET  /tasks/:id                → task detail + comments
-  POST /tasks                    → create {title, assign?, priority?, body?}
+  POST /tasks                    → create {title, assign?, priority?, body?, workspace?}
   POST /tasks/:id/plan           → save plan {goals[], affected_files[], effort}
   POST /tasks/:id/status         → update {status: assigned|in-progress|completed}
   POST /tasks/:id/complete       → report {summary, modified_files?, new_files?}

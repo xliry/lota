@@ -110,7 +110,7 @@ const err = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${
 // ── Pre-check (zero-cost, no LLM) ──────────────────────────────
 
 interface WorkData {
-  tasks: { id: number; title: string; status: string; body?: string }[];
+  tasks: { id: number; title: string; status: string; body?: string; workspace?: string }[];
 }
 
 async function checkForWork(config: AgentConfig): Promise<WorkData> {
@@ -125,15 +125,33 @@ async function checkForWork(config: AgentConfig): Promise<WorkData> {
 
 // ── Prompt ──────────────────────────────────────────────────────
 
-function buildPrompt(agentName: string, work: WorkData): string {
+function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): string {
+  const repoOwner = config.githubRepo.split("/")[0] || agentName;
   const lines = [
     `You are autonomous LOTA agent "${agentName}". Use the lota() MCP tool for all API calls.`,
+    "",
+    "── RULES ──",
+    "  GIT COMMIT RULES (MUST follow):",
+    `    - git config user.name "${agentName}"`,
+    `    - git config user.email "${repoOwner}@users.noreply.github.com"`,
+    "    - NEVER put tokens or credentials in git remote URLs",
+    "    - Use `git push` directly — GITHUB_TOKEN is already in your environment",
+    "    - If remote URL needs auth, use: git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/OWNER/REPO.git",
+    "",
+    "  WORKSPACE RULES:",
+    "    - If a task has a workspace path, that is your working directory. The project is ALREADY there.",
+    "    - NEVER git clone a repo that already exists locally.",
+    "    - NEVER work in /tmp/ if a workspace path is provided.",
+    "    - Use Write/Edit tools for file operations, NOT cat/heredoc via Bash.",
   ];
 
   if (work.tasks.length) {
     lines.push("", "── ASSIGNED TASKS ──");
     for (const t of work.tasks) {
       lines.push(`  Task #${t.id}: ${t.title || "(untitled)"}`);
+      if (t.workspace) {
+        lines.push(`  Workspace: ${t.workspace} (project is here — DO NOT clone)`);
+      }
       if (t.body) {
         lines.push("", "  ── TASK BODY ──", t.body, "  ── END BODY ──");
       }
@@ -256,16 +274,27 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       ...(isRoot ? [] : ["--dangerously-skip-permissions"]),
       "--model", config.model,
       "--mcp-config", config.configPath,
-      "-p", buildPrompt(config.agentName, work),
+      "-p", buildPrompt(config.agentName, work, config),
     ];
 
     if (isRoot) {
       dim("Running as root — skipping --dangerously-skip-permissions");
     }
 
+    // Use workspace from first task as cwd if available
+    const taskWorkspace = work.tasks[0]?.workspace;
+    const workingDir = taskWorkspace && existsSync(taskWorkspace) ? taskWorkspace : process.cwd();
+    if (taskWorkspace) {
+      if (existsSync(taskWorkspace)) {
+        ok(`Workspace: ${taskWorkspace}`);
+      } else {
+        err(`Workspace not found: ${taskWorkspace} — using cwd`);
+      }
+    }
+
     const child = spawn("claude", args, {
       stdio: ["ignore", "pipe", "pipe"],
-      cwd: process.cwd(),
+      cwd: workingDir,
       env: cleanEnv,
     });
 
