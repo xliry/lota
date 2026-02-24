@@ -2,7 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { lota, AGENT_NAME, GITHUB_REPO } from "./api.js";
+import { lota, AGENT_NAME, GITHUB_REPO } from "./github.js";
 
 const server = new McpServer({ name: "lota", version: "3.0.0" });
 
@@ -20,10 +20,7 @@ ENDPOINTS:
   POST /tasks/:id/status         → update {status: assigned|in-progress|completed}
   POST /tasks/:id/complete       → report {summary, modified_files?, new_files?}
   POST /tasks/:id/comment        → add comment {content}
-  GET  /messages                 → my unread DMs
-  POST /messages                 → send {to, content}
-  POST /messages/:id/reply       → reply {content}
-  GET  /sync                     → all pending work (tasks + messages)`;
+  GET  /sync                     → all pending work (tasks)`;
 
 server.tool(
   "lota",

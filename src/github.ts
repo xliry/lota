@@ -1,3 +1,7 @@
+export const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+export const GITHUB_REPO = process.env.GITHUB_REPO || "";
+export const AGENT_NAME = process.env.AGENT_NAME || "";
+
 const token = () => process.env.GITHUB_TOKEN || "";
 const repo = () => process.env.GITHUB_REPO || "";
 const agent = () => process.env.AGENT_NAME || "";
@@ -169,45 +173,10 @@ export async function lota(method: string, path: string, body?: Record<string, u
     return await postIssueComment(id, content);
   }
 
-  // GET /messages
-  if (method === "GET" && p === "/messages") {
-    const issues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(`dm,to:${agent()}`)}&state=open`) as Array<Record<string, unknown>>;
-    return issues;
-  }
-
-  // POST /messages
-  if (method === "POST" && p === "/messages") {
-    const { to, content } = body as { to: string; content: string };
-    return await gh(`/repos/${repo()}/issues`, {
-      method: "POST",
-      body: JSON.stringify({
-        title: `DM: ${agent()} -> ${to}`,
-        body: content,
-        labels: ["dm", `to:${to}`, `from:${agent()}`],
-      }),
-    });
-  }
-
-  // POST /messages/:id/reply
-  const replyMatch = method === "POST" && p.match(/^\/messages\/(\d+)\/reply$/);
-  if (replyMatch) {
-    const id = replyMatch[1];
-    const { content } = body as { content: string };
-    const result = await postIssueComment(id, content);
-    await gh(`/repos/${repo()}/issues/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ state: "closed" }),
-    });
-    return result;
-  }
-
   // GET /sync
   if (method === "GET" && p === "/sync") {
-    const [tasks, messages] = await Promise.all([
-      lota("GET", "/tasks"),
-      lota("GET", "/messages"),
-    ]);
-    return { tasks, messages };
+    const tasks = await lota("GET", "/tasks");
+    return { tasks };
   }
 
   throw new Error(`Unknown route: ${method} ${path}`);

@@ -46,11 +46,21 @@ Options:
     }
   }
 
-  // Find .mcp.json
-  const configPath = mcpConfig
-    ? resolve(mcpConfig)
-    : [resolve(".mcp.json"), resolve(process.env.HOME || "~", ".mcp.json")]
-        .find(existsSync) || "";
+  // Find .mcp.json — search upward from cwd, then $HOME
+  function findMcpConfig(): string {
+    let dir = process.cwd();
+    while (true) {
+      const candidate = join(dir, ".mcp.json");
+      if (existsSync(candidate)) return candidate;
+      const parent = resolve(dir, "..");
+      if (parent === dir) break;
+      dir = parent;
+    }
+    const home = resolve(process.env.HOME || "~", ".mcp.json");
+    if (existsSync(home)) return home;
+    return "";
+  }
+  const configPath = mcpConfig ? resolve(mcpConfig) : findMcpConfig();
 
   if (!configPath) {
     console.error("Error: .mcp.json not found. Run: lota-agent --help");
@@ -79,12 +89,12 @@ Options:
 
 // ── Logging (stdout + file) ──────────────────────────────────────
 
-const LOG_DIR = join(process.env.HOME || "/tmp", ".lota");
+const LOG_DIR = join(process.env.HOME || "~", ".lota", "lota");
 const LOG_FILE = join(LOG_DIR, "agent.log");
 mkdirSync(LOG_DIR, { recursive: true });
 writeFileSync(LOG_FILE, ""); // clear on start
 
-const time = () => new Date().toLocaleTimeString("tr-TR", { hour12: false });
+const time = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 
 function out(msg: string, plain: string) {
   console.log(msg);
@@ -101,7 +111,6 @@ const err = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${
 
 interface WorkData {
   tasks: { id: number; title: string; status: string; body?: string }[];
-  messages: unknown[];
 }
 
 async function checkForWork(config: AgentConfig): Promise<WorkData> {
@@ -110,8 +119,8 @@ async function checkForWork(config: AgentConfig): Promise<WorkData> {
   process.env.GITHUB_REPO = config.githubRepo;
   process.env.AGENT_NAME = config.agentName;
 
-  const data = await lota("GET", "/sync") as { tasks: WorkData["tasks"]; messages: WorkData["messages"] };
-  return { tasks: data.tasks || [], messages: data.messages || [] };
+  const data = await lota("GET", "/sync") as { tasks: WorkData["tasks"] };
+  return { tasks: data.tasks || [] };
 }
 
 // ── Prompt ──────────────────────────────────────────────────────
@@ -121,19 +130,6 @@ function buildPrompt(agentName: string, work: WorkData): string {
     `You are autonomous LOTA agent "${agentName}". Use the lota() MCP tool for all API calls.`,
   ];
 
-  // Messages
-  if (work.messages.length) {
-    lines.push("", "── UNREAD MESSAGES ──");
-    for (const m of work.messages as Array<{ title?: string; body?: string; number?: number }>) {
-      lines.push(`  Message #${m.number}: ${m.title || "(no subject)"}`);
-      if (m.body) lines.push(`    ${m.body.slice(0, 200)}`);
-    }
-    lines.push(
-      `  Reply via: lota("POST", "/messages/<id>/reply", {"content": "..."})`,
-    );
-  }
-
-  // Tasks
   if (work.tasks.length) {
     lines.push("", "── ASSIGNED TASKS ──");
     for (const t of work.tasks) {
@@ -311,21 +307,25 @@ async function main() {
     }
 
     const taskCount = work.tasks.length;
-    const msgCount = work.messages.length;
 
-    if (taskCount === 0 && msgCount === 0) {
-      dim(`No pending work (0 tasks, 0 messages) — skipped Claude spawn`);
+    if (taskCount === 0) {
+      dim(`No pending work — skipped Claude spawn`);
     } else {
-      ok(`Found work: ${taskCount} task(s), ${msgCount} message(s)`);
+      ok(`Found ${taskCount} task(s)`);
+      for (const t of work.tasks) {
+        dim(`  → #${t.id}: ${t.title}`);
+      }
       console.log("  ─────────────────────────────────────");
 
+      const cycleStart = Date.now();
       const code = await runClaude(config, work);
+      const elapsed = Math.round((Date.now() - cycleStart) / 1000);
 
       console.log("  ─────────────────────────────────────");
       if (code === 0) {
-        ok("Cycle complete.");
+        ok(`Cycle complete in ${elapsed}s (${taskCount} task(s))`);
       } else {
-        err(`Claude exited with code ${code}`);
+        err(`Claude exited with code ${code} after ${elapsed}s`);
       }
     }
 
