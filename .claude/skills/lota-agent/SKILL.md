@@ -1,22 +1,18 @@
 ---
 name: lota-agent
 description: >
-  Start the autonomous LOTA agent in the background. The agent polls GitHub Issues
+  Start the autonomous Lota agent in the background. The agent polls GitHub Issues
   for assigned tasks, then spawns Claude Code to plan, execute, and complete them.
   Use when the user says "lota-agent", "start agent", "autonomous mode", "launch agent",
   or wants to run the autonomous agent.
 allowed-tools: Bash(node *), Bash(cd * && node *), Bash(kill *), Bash(sleep *), Bash(ps *), Bash(pkill *), Bash(git clone *), Bash(npm *), Bash(curl *), Bash(mkdir *)
 ---
 
-# LOTA Agent Skill
+# Lota Agent
 
-## What to do
+Start the autonomous agent daemon. Follow these steps exactly.
 
-Run this EXACT sequence. Do NOT run any other commands.
-
-### Step 1: Ensure lota is built
-
-Check if the build exists. If not, clone and build automatically:
+## Step 1: Build check
 
 ```bash
 if [ ! -f ~/.lota/lota/dist/daemon.js ]; then
@@ -24,29 +20,34 @@ if [ ! -f ~/.lota/lota/dist/daemon.js ]; then
 fi
 ```
 
-If npm is not found, install Node.js first:
+If npm is not found:
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
 ```
 
-### Step 2: Ensure .mcp.json exists
+## Step 2: Config check
 
-If `.mcp.json` does not exist in the current project directory, ask the user for:
-1. GitHub Token (fine-grained PAT with Issues read/write)
-2. GitHub Repo (owner/repo format)
-3. Agent Name (default: dev-1)
+If `.mcp.json` doesn't exist, check for a GitHub token:
+1. Check env `GITHUB_TOKEN`
+2. Check `gh auth token 2>/dev/null`
+3. Look in `$HOME/.mcp.json` for existing tokens
 
-Then write `.mcp.json` with those values. If it already exists, skip this step.
+If found, use it. If not, ask the user:
+"I need a GitHub token. This stays in your local config — it only talks to GitHub's API."
 
-### Step 3: Kill any existing agent
+Then guide them to https://github.com/settings/tokens?type=beta — they need Issues read/write on xliry/lota-agents.
+
+Write `.mcp.json` with repo `xliry/lota-agents` and agent name `lota`.
+
+## Step 3: Kill existing agent
 
 ```bash
 pkill -f "node.*daemon" 2>/dev/null; true
 ```
 
-Note: This may show "exit code 144" — that's normal (process was killed). Ignore it.
+Note: Exit code 144 is normal (process was killed). Ignore it.
 
-### Step 4: Start agent in background
+## Step 4: Start daemon
 
 Run with `run_in_background: true` and `timeout: 600000`:
 
@@ -54,19 +55,19 @@ Run with `run_in_background: true` and `timeout: 600000`:
 cd ~/.lota/lota && node dist/daemon.js --interval 15 2>&1
 ```
 
-### Step 5: Wait and read log file
+## Step 5: Wait and check
 
 ```bash
 sleep 5
 ```
 
-Then use the **Read** tool to read `~/.lota/agent.log`.
+Then **Read** `~/.lota/agent.log`.
 
-### Step 6: Report to user
+## Step 6: Report
 
-Show the log content and tell the user:
-- The agent name (from banner)
-- The poll interval
-- "Agent is running. Check logs anytime: `cat ~/.lota/agent.log`"
+Tell the user:
+- Agent name and poll interval (from the log banner)
+- "Agent is running. It'll pick up tasks from xliry/lota-agents automatically."
+- "Use `/lota-hub` to create tasks, or check logs: `cat ~/.lota/agent.log`"
 
-That's ALL. Do NOT run diagnostics, version checks, or anything else.
+That's all. Don't run diagnostics or extra commands.

@@ -101,7 +101,7 @@ function out(msg: string, plain: string) {
   appendFileSync(LOG_FILE, `${plain}\n`);
 }
 
-const PRE = "\x1b[36m[lota-agent]\x1b[0m";
+const PRE = "\x1b[36m[lota]\x1b[0m";
 const log = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m ${msg}`, `[${time()}] ${msg}`);
 const ok = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[32m✓ ${msg}\x1b[0m`, `[${time()}] ✓ ${msg}`);
 const dim = (msg: string) => out(`${PRE} \x1b[90m${time()} ${msg}\x1b[0m`, `[${time()}] ${msg}`);
@@ -145,6 +145,22 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     "    - Use Write/Edit tools for file operations, NOT cat/heredoc via Bash.",
   ];
 
+  // Subagent instructions
+  lines.push(
+    "",
+    "── SUBAGENTS ──",
+    "  Use the Task tool to spawn subagents for parallel and focused work:",
+    "  - Explore agent (subagent_type: 'Explore'): Search codebase, find files, understand architecture",
+    "  - Plan agent (subagent_type: 'Plan'): Design implementation approach before coding",
+    "  - General agent (subagent_type: 'general-purpose'): Execute complex multi-step tasks",
+    "",
+    "  ALWAYS explore before planning. ALWAYS plan before coding.",
+    "  Launch multiple Explore agents in parallel when investigating different areas.",
+    "  Example:",
+    '    Task({ prompt: "Find all auth-related files and understand the login flow", subagent_type: "Explore" })',
+    '    Task({ prompt: "Search for existing test patterns in this project", subagent_type: "Explore" })',
+  );
+
   if (work.tasks.length) {
     lines.push("", "── ASSIGNED TASKS ──");
     for (const t of work.tasks) {
@@ -164,10 +180,11 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
       "",
       "  For each task:",
       `    1. Read full details: lota("GET", "/tasks/<id>") — check body AND comments for updates`,
-      `    2. Save plan: lota("POST", "/tasks/<id>/plan", {"goals": [...], "affected_files": [], "effort": "medium"})`,
-      `    3. Set status: lota("POST", "/tasks/<id>/status", {"status": "in-progress"})`,
-      "    4. Execute: read files, write code, run tests.",
-      `    5. Complete: lota("POST", "/tasks/<id>/complete", {"summary": "...", "modified_files": [], "new_files": []})`,
+      "    2. Explore: Spawn Explore subagents to understand the codebase and affected areas",
+      `    3. Plan: Use a Plan subagent OR save plan via lota("POST", "/tasks/<id>/plan", {"goals": [...], "affected_files": [], "effort": "medium"})`,
+      `    4. Set status: lota("POST", "/tasks/<id>/status", {"status": "in-progress"})`,
+      "    5. Execute: Write code, run tests. Use general-purpose subagents for parallel work if needed.",
+      `    6. Complete: lota("POST", "/tasks/<id>/complete", {"summary": "...", "modified_files": [], "new_files": []})`,
     );
   }
 
@@ -213,6 +230,11 @@ function formatEvent(event: any) {
           write("💻", `Bash: ${cmd}`);
         } else if (name === "Glob" || name === "Grep") {
           write("🔍", `${name}: ${input.pattern || ""}`);
+        } else if (name === "Task") {
+          const desc = input.description || "";
+          const type = input.subagent_type || "";
+          const bg = input.run_in_background ? " [bg]" : "";
+          write("🤖", `Subagent (${type}): ${desc}${bg}`);
         } else if (name.startsWith("mcp__lota")) {
           const method = input.method || "";
           const path = input.path || "";
@@ -389,7 +411,7 @@ async function main() {
   const banner = [
     "",
     "  ┌─────────────────────────┐",
-    "  │      LOTA Agent         │",
+    "  │         Lota            │",
     "  └─────────────────────────┘",
     `  agent:    ${config.agentName}`,
     `  model:    ${config.model}`,

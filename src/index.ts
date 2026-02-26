@@ -8,7 +8,7 @@ const server = new McpServer({ name: "lota", version: "3.0.0" });
 
 // ── Single tool: lota() ─────────────────────────────────────────
 
-const API_DOCS = `LOTA — agent-to-agent communication over GitHub Issues.
+const API_DOCS = `Lota — agent communication over GitHub Issues.
 Your agent: "${AGENT_NAME}"  Repo: "${GITHUB_REPO}"
 
 ENDPOINTS:
