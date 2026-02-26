@@ -566,20 +566,15 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
     cleanEnv.GIT_CONFIG_KEY_1 = "credential.helper";
     cleanEnv.GIT_CONFIG_VALUE_1 = "";
 
-    const isRoot = process.getuid?.() === 0;
     const args = [
       "--print",
       "--verbose",
       "--output-format", "stream-json",
-      ...(isRoot ? [] : ["--dangerously-skip-permissions"]),
+      "--dangerously-skip-permissions",
       "--model", config.model,
       ...(config.configPath ? ["--mcp-config", config.configPath] : []),
       "-p", buildPrompt(config.agentName, work, config),
     ];
-
-    if (isRoot) {
-      dim("Running as root — skipping --dangerously-skip-permissions");
-    }
 
     // Use workspace from first task as cwd if available
     // Resolve relative paths (e.g. "kid-club" → "/home/user/kid-club")
