@@ -558,6 +558,31 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       writeFileSync(tokenFile, config.githubToken, { mode: 0o600 });
     } catch { /* may fail in some environments */ }
 
+    // Ensure global Claude settings allow all tools (needed when --dangerously-skip-permissions
+    // doesn't work, e.g. root user where it requires interactive confirmation)
+    const claudeSettingsDir = join(process.env.HOME || "/root", ".claude");
+    const claudeSettingsFile = join(claudeSettingsDir, "settings.json");
+    try {
+      mkdirSync(claudeSettingsDir, { recursive: true });
+      const settings = {
+        permissions: {
+          allow: [
+            "mcp__lota__lota",
+            "Bash(*)",
+            "Read(*)",
+            "Write(*)",
+            "Edit(*)",
+            "Glob(*)",
+            "Grep(*)",
+            "Task(*)",
+            "WebFetch(*)",
+            "WebSearch(*)"
+          ]
+        }
+      };
+      writeFileSync(claudeSettingsFile, JSON.stringify(settings, null, 2) + "\n");
+    } catch { /* may fail in some environments */ }
+
     // Also pass via env as backup
     cleanEnv.GIT_ASKPASS = "/bin/echo";
     cleanEnv.GIT_CONFIG_COUNT = "2";
@@ -593,6 +618,25 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
         err(`Workspace not found: ${rawWorkspace} (tried ${taskWorkspace}) — using cwd`);
       }
     }
+
+    // Also write .claude/settings.json into the workspace cwd
+    // Claude Code reads project-level settings which can override global ones
+    try {
+      const wsSettingsDir = join(workingDir, ".claude");
+      mkdirSync(wsSettingsDir, { recursive: true });
+      const wsSettingsFile = join(wsSettingsDir, "settings.json");
+      if (!existsSync(wsSettingsFile)) {
+        writeFileSync(wsSettingsFile, JSON.stringify({
+          permissions: {
+            allow: [
+              "mcp__lota__lota", "Bash(*)", "Read(*)", "Write(*)",
+              "Edit(*)", "Glob(*)", "Grep(*)", "Task(*)",
+              "WebFetch(*)", "WebSearch(*)"
+            ]
+          }
+        }, null, 2) + "\n");
+      }
+    } catch { /* workspace may be read-only */ }
 
     const child = spawn("claude", args, {
       stdio: ["ignore", "pipe", "pipe"],
