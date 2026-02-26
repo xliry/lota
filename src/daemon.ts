@@ -335,20 +335,18 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     `You are autonomous LOTA agent "${agentName}". Use the lota() MCP tool for all API calls.`,
     "",
     "── RULES ──",
-    "  GIT COMMIT RULES (MUST follow):",
+    "  GIT RULES (MUST follow):",
     `    - git config user.name "${agentName}"`,
     `    - git config user.email "${repoOwner}@users.noreply.github.com"`,
-    "    - NEVER put tokens or credentials in git remote URLs",
-    "    - Use `git push` directly — GITHUB_TOKEN is already in your environment",
-    "    - If remote URL needs auth, use: git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/OWNER/REPO.git",
+    "    - Git credential helper is pre-configured. Just use plain URLs (git clone/push/pull work automatically).",
+    "    - Do NOT waste time looking for tokens, running gh auth, or debugging git auth. It already works.",
+    "    - If git clone fails, try: git clone https://x-access-token:$GITHUB_TOKEN@github.com/OWNER/REPO.git",
     "",
     "  WORKSPACE & REPO RULES (priority order):",
     "    1. If a task has a workspace path AND it exists locally → cd into it. Then run `git pull` to make sure it's up to date.",
-    "    2. If no workspace but a repo link exists (e.g. 'Repo: https://github.com/user/project') → clone it, work there.",
+    "    2. If no workspace but a repo link exists (e.g. 'Repo: https://github.com/user/project') → clone it to /root/<repo-name>, work there.",
     "    - ALWAYS git pull before starting work to ensure you have the latest code.",
-    "    - NEVER git clone a repo that already exists locally.",
-    "    - NEVER work in /tmp/ if a workspace path is provided.",
-    "    - For push access: git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/OWNER/REPO.git",
+    "    - NEVER git clone a repo that already exists locally — use the existing directory.",
     "    - Use Write/Edit tools for file operations, NOT cat/heredoc via Bash.",
   ];
 
@@ -542,7 +540,14 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
     cleanEnv.AGENT_NAME = config.agentName;
 
     // Configure git to use GITHUB_TOKEN for authentication
-    // This makes git clone/push work without tokens in URLs
+    // Set global git config so all git operations (clone/push/pull) work automatically
+    try {
+      execSync(`git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${config.githubToken}"; }; f'`, { stdio: "ignore" });
+      execSync(`git config --global user.name "${config.agentName}"`, { stdio: "ignore" });
+      execSync(`git config --global user.email "${config.githubRepo.split("/")[0]}@users.noreply.github.com"`, { stdio: "ignore" });
+    } catch { /* git config may fail in some environments */ }
+
+    // Also pass via env as backup
     cleanEnv.GIT_ASKPASS = "/bin/echo";
     cleanEnv.GIT_CONFIG_COUNT = "2";
     cleanEnv.GIT_CONFIG_KEY_0 = "credential.https://github.com.helper";
