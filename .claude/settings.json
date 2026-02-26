@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "mcp__lota__lota"
+      "mcp__lota__lota",
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Task(*)"
     ]
   }
 }

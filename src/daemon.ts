@@ -335,12 +335,16 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     `You are autonomous LOTA agent "${agentName}". Use the lota() MCP tool for all API calls.`,
     "",
     "── RULES ──",
+    "  GITHUB TOKEN ACCESS:",
+    "    - Token file: ~/.lota/.github-token (read it with: cat ~/.lota/.github-token)",
+    "    - For curl API calls: TOKEN=$(cat ~/.lota/.github-token) && curl -H \"Authorization: token $TOKEN\" ...",
+    "    - Do NOT waste time looking for env vars, gh auth, or debugging auth. Just read the token file.",
+    "",
     "  GIT RULES (MUST follow):",
     `    - git config user.name "${agentName}"`,
     `    - git config user.email "${repoOwner}@users.noreply.github.com"`,
     "    - Git credential helper is pre-configured. Just use plain URLs (git clone/push/pull work automatically).",
-    "    - Do NOT waste time looking for tokens, running gh auth, or debugging git auth. It already works.",
-    "    - If git clone fails, try: git clone https://x-access-token:$GITHUB_TOKEN@github.com/OWNER/REPO.git",
+    "    - If git clone fails, read token and use: git clone https://x-access-token:$(cat ~/.lota/.github-token)@github.com/OWNER/REPO.git",
     "",
     "  WORKSPACE & REPO RULES (priority order):",
     "    1. If a task has a workspace path AND it exists locally → cd into it. Then run `git pull` to make sure it's up to date.",
@@ -546,6 +550,13 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       execSync(`git config --global user.name "${config.agentName}"`, { stdio: "ignore" });
       execSync(`git config --global user.email "${config.githubRepo.split("/")[0]}@users.noreply.github.com"`, { stdio: "ignore" });
     } catch { /* git config may fail in some environments */ }
+
+    // Write token to a file so agent's Bash tool can read it
+    // (Claude Code may sandbox env vars from Bash commands)
+    const tokenFile = join(process.env.HOME || "/root", ".lota", ".github-token");
+    try {
+      writeFileSync(tokenFile, config.githubToken, { mode: 0o600 });
+    } catch { /* may fail in some environments */ }
 
     // Also pass via env as backup
     cleanEnv.GIT_ASKPASS = "/bin/echo";
