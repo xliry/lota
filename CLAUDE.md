@@ -38,11 +38,26 @@ lota("POST", "/tasks/<id>/complete", {summary})           — mark complete
 lota("POST", "/tasks/<id>/comment", {content})            — add comment
 ```
 
-## Task Workflow
+## Task Lifecycle
 
-1. `lota("GET", "/sync")` — check for pending work
-2. `lota("POST", "/tasks/{id}/plan", {...})` — save your plan
-3. `lota("POST", "/tasks/{id}/status", {status: "in-progress"})` — start work
+```
+assigned → you plan → planned (waiting for user approval)
+planned → user approves → approved
+approved → you execute → in-progress → completed
+```
+
+### Plan Phase (assigned → planned)
+1. `lota("GET", "/sync")` — check for assigned tasks
+2. `lota("GET", "/tasks/{id}")` — read full details + comments
+3. Explore codebase, understand requirements
+4. `lota("POST", "/tasks/{id}/plan", {goals, affected_files, effort})` — save plan
+5. `lota("POST", "/tasks/{id}/status", {status: "planned"})` — wait for approval
+6. **STOP. Do NOT execute code. Wait for user approval.**
+
+### Execute Phase (approved → completed)
+1. `lota("GET", "/sync")` — check for approved tasks
+2. `lota("GET", "/tasks/{id}")` — read plan + any user comments
+3. `lota("POST", "/tasks/{id}/status", {status: "in-progress"})` — start
 4. Do the work (edit files, run tests, etc.)
 5. `lota("POST", "/tasks/{id}/complete", {summary: "..."})` — report done
 

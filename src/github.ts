@@ -17,7 +17,7 @@ const LABEL = {
 
 const META_VERSION = "v1";
 
-export type TaskStatus = "assigned" | "in-progress" | "completed";
+export type TaskStatus = "assigned" | "planned" | "approved" | "in-progress" | "completed";
 export type TaskPriority = "low" | "medium" | "high";
 
 export interface Task {
@@ -258,9 +258,17 @@ const addComment: Handler = async (params, _query, body) => {
 };
 
 const sync: Handler = async () => {
-  const tasks = await getTasks({}, new URLSearchParams());
+  // Fetch assigned tasks (need planning)
+  const assignedLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}assigned`;
+  const assignedIssues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(assignedLabels)}&state=open`) as GhIssue[];
+  const assigned = assignedIssues.map(extractFromIssue);
 
-  // Also fetch in-progress tasks for comment detection
+  // Fetch approved tasks (ready to execute)
+  const approvedLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}approved`;
+  const approvedIssues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(approvedLabels)}&state=open`) as GhIssue[];
+  const approved = approvedIssues.map(extractFromIssue);
+
+  // Fetch in-progress tasks for comment detection
   const inProgressLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}in-progress`;
   const inProgressIssues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(inProgressLabels)}&state=open`) as Array<GhIssue & { comments: number }>;
   const inProgress = inProgressIssues.map(issue => ({
@@ -268,7 +276,7 @@ const sync: Handler = async () => {
     comment_count: issue.comments ?? 0,
   }));
 
-  return { tasks, in_progress: inProgress };
+  return { assigned, approved, in_progress: inProgress };
 };
 
 // ── Route table ─────────────────────────────────────────────

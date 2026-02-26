@@ -138,6 +138,7 @@ interface CommentUpdate {
 }
 
 interface WorkData {
+  phase: "plan" | "execute" | "comments";
   tasks: TaskInfo[];
   commentUpdates: CommentUpdate[];
 }
@@ -145,18 +146,20 @@ interface WorkData {
 // Track comment counts for in-progress tasks
 const lastSeenComments = new Map<number, number>();
 
-async function checkForWork(config: AgentConfig): Promise<WorkData> {
+async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
   // Set env vars so github.ts can use them
   process.env.GITHUB_TOKEN = config.githubToken;
   process.env.GITHUB_REPO = config.githubRepo;
   process.env.AGENT_NAME = config.agentName;
 
   const data = await lota("GET", "/sync") as {
-    tasks: TaskInfo[];
+    assigned: TaskInfo[];
+    approved: TaskInfo[];
     in_progress: (TaskInfo & { comment_count: number })[];
   };
 
-  const tasks = data.tasks || [];
+  const assigned = data.assigned || [];
+  const approved = data.approved || [];
   const inProgress = data.in_progress || [];
   const commentUpdates: CommentUpdate[] = [];
 
@@ -166,10 +169,8 @@ async function checkForWork(config: AgentConfig): Promise<WorkData> {
     const currentCount = task.comment_count ?? 0;
 
     if (lastSeen === -1) {
-      // First time seeing this task — store current count, don't trigger
       lastSeenComments.set(task.id, currentCount);
     } else if (currentCount > lastSeen) {
-      // New comments detected!
       const newCount = currentCount - lastSeen;
       commentUpdates.push({
         id: task.id,
@@ -187,7 +188,18 @@ async function checkForWork(config: AgentConfig): Promise<WorkData> {
     if (!activeIds.has(id)) lastSeenComments.delete(id);
   }
 
-  return { tasks, commentUpdates };
+  // Priority: comments > approved (execute) > assigned (plan)
+  if (commentUpdates.length) {
+    return { phase: "comments", tasks: [], commentUpdates };
+  }
+  if (approved.length) {
+    return { phase: "execute", tasks: approved, commentUpdates: [] };
+  }
+  if (assigned.length) {
+    return { phase: "plan", tasks: assigned, commentUpdates: [] };
+  }
+
+  return null; // nothing to do
 }
 
 // ── Prompt ──────────────────────────────────────────────────────
@@ -227,10 +239,10 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     "  Launch multiple Explore agents in parallel when investigating different areas.",
   );
 
-  // Comment updates (can happen independently of new tasks)
-  if (work.commentUpdates.length) {
+  // ── PHASE: COMMENTS ──
+  if (work.phase === "comments") {
     lines.push("", "── NEW COMMENTS DETECTED ──");
-    lines.push("  PRIORITY: Read these first — the user may be giving feedback or new instructions.");
+    lines.push("  PRIORITY: Read these and respond appropriately.");
     for (const cu of work.commentUpdates) {
       lines.push(`  Task #${cu.id}: "${cu.title}" has ${cu.new_comment_count} new comment(s)`);
       lines.push(`    → Read them: lota("GET", "/tasks/${cu.id}")`);
@@ -247,8 +259,11 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     );
   }
 
-  if (work.tasks.length) {
-    lines.push("", "── ASSIGNED TASKS ──");
+  // ── PHASE: PLAN (assigned tasks — create plan, wait for approval) ──
+  if (work.phase === "plan" && work.tasks.length) {
+    lines.push("", "── PLAN PHASE — Create plans for approval ──");
+    lines.push("  These tasks are NEW and need a plan. The user will review before you execute.");
+    lines.push("");
     for (const t of work.tasks) {
       lines.push(`  Task #${t.id}: ${t.title || "(untitled)"}`);
       if (t.workspace) {
@@ -258,28 +273,46 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
         lines.push("", "  ── TASK BODY ──", t.body, "  ── END BODY ──");
       }
     }
-
     lines.push(
       "",
-      "  IMPORTANT: Before starting any task, ALWAYS read the full task details and comments first:",
+      "  WORKFLOW for each task:",
+      `    1. Read full details: lota("GET", "/tasks/<id>")`,
+      "    2. Explore the codebase to understand what's needed (use Explore subagents)",
+      `    3. Create a detailed plan: lota("POST", "/tasks/<id>/plan", {"goals": [...], "affected_files": [...], "effort": "..."})`,
+      `    4. Set status to planned: lota("POST", "/tasks/<id>/status", {"status": "planned"})`,
+      "",
+      "  IMPORTANT:",
+      "  - Do NOT execute any code changes. Only explore and plan.",
+      "  - The plan should be clear enough for the user to approve or give feedback.",
+      "  - After setting status to 'planned', STOP. The user will approve via Hub.",
+    );
+  }
+
+  // ── PHASE: EXECUTE (approved tasks — do the work) ──
+  if (work.phase === "execute" && work.tasks.length) {
+    lines.push("", "── EXECUTE PHASE — Approved tasks, ready to work ──");
+    lines.push("  These tasks have been reviewed and approved. Execute them now.");
+    lines.push("");
+    for (const t of work.tasks) {
+      lines.push(`  Task #${t.id}: ${t.title || "(untitled)"}`);
+      if (t.workspace) {
+        lines.push(`  Workspace: ${t.workspace} (project is here — DO NOT clone)`);
+      }
+      if (t.body) {
+        lines.push("", "  ── TASK BODY ──", t.body, "  ── END BODY ──");
+      }
+    }
+    lines.push(
+      "",
+      "  IMPORTANT: Read the full task details AND comments (including the plan) first:",
       `    lota("GET", "/tasks/<id>")`,
-      "  Comments may contain critical updates, requirement changes, or tech stack decisions.",
+      "  Comments may contain approval notes, adjustments, or extra instructions from the user.",
       "",
-      "  WORKFLOW — adapt based on task complexity:",
-      "",
-      "  SIMPLE TASK (clear instructions, single file, small change):",
-      `    1. Read: lota("GET", "/tasks/<id>")`,
+      "  WORKFLOW:",
+      `    1. Read: lota("GET", "/tasks/<id>") — check plan + any user comments`,
       `    2. Set status: lota("POST", "/tasks/<id>/status", {"status": "in-progress"})`,
-      "    3. Execute directly — no explore/plan needed",
+      "    3. Execute the plan. Use subagents for parallel work if needed.",
       `    4. Complete: lota("POST", "/tasks/<id>/complete", {"summary": "...", "modified_files": [], "new_files": []})`,
-      "",
-      "  COMPLEX TASK (vague requirements, multiple files, architecture decisions):",
-      `    1. Read: lota("GET", "/tasks/<id>")`,
-      "    2. Explore: Spawn Explore subagents to understand codebase and affected areas",
-      `    3. Plan: Save plan via lota("POST", "/tasks/<id>/plan", {"goals": [...], "affected_files": [], "effort": "..."})`,
-      `    4. Set status: lota("POST", "/tasks/<id>/status", {"status": "in-progress"})`,
-      "    5. Execute: Write code, run tests. Use subagents for parallel work if needed.",
-      `    6. Complete: lota("POST", "/tasks/<id>/complete", {"summary": "...", "modified_files": [], "new_files": []})`,
     );
   }
 
@@ -534,7 +567,7 @@ async function main() {
   while (!stopped) {
     log("Checking for work...");
 
-    let work: WorkData;
+    let work: WorkData | null;
     try {
       work = await checkForWork(config);
     } catch (e) {
@@ -544,42 +577,38 @@ async function main() {
       continue;
     }
 
-    const taskCount = work.tasks.length;
-    const commentCount = work.commentUpdates.length;
-
-    if (taskCount === 0 && commentCount === 0) {
+    if (!work) {
       dim(`No pending work — skipped Claude spawn`);
-    } else if (taskCount === 0 && commentCount > 0) {
-      ok(`No new tasks, but ${commentCount} task(s) have new comments`);
-      for (const cu of work.commentUpdates) {
-        dim(`  💬 #${cu.id}: ${cu.title} (${cu.new_comment_count} new comment(s))`);
-      }
-      console.log("  ─────────────────────────────────────");
-
-      const cycleStart = Date.now();
-      const code = await runClaude(config, work);
-      const elapsed = Math.round((Date.now() - cycleStart) / 1000);
-
-      console.log("  ─────────────────────────────────────");
-      if (code === 0) {
-        ok(`Comment handling complete in ${elapsed}s`);
-      } else {
-        err(`Claude exited with code ${code} after ${elapsed}s`);
-      }
     } else {
-      ok(`Found ${taskCount} task(s)`);
-      for (const t of work.tasks) {
-        dim(`  → #${t.id}: ${t.title}`);
-      }
-      console.log("  ─────────────────────────────────────");
+      const phase = work.phase;
+      const taskCount = work.tasks.length;
+      const commentCount = work.commentUpdates.length;
 
+      if (phase === "comments") {
+        ok(`${commentCount} task(s) have new comments`);
+        for (const cu of work.commentUpdates) {
+          dim(`  💬 #${cu.id}: ${cu.title} (${cu.new_comment_count} new)`);
+        }
+      } else if (phase === "plan") {
+        ok(`${taskCount} new task(s) — creating plans for approval`);
+        for (const t of work.tasks) {
+          dim(`  📋 #${t.id}: ${t.title}`);
+        }
+      } else if (phase === "execute") {
+        ok(`${taskCount} approved task(s) — executing`);
+        for (const t of work.tasks) {
+          dim(`  🚀 #${t.id}: ${t.title}`);
+        }
+      }
+
+      console.log("  ─────────────────────────────────────");
       const cycleStart = Date.now();
       const code = await runClaude(config, work);
       const elapsed = Math.round((Date.now() - cycleStart) / 1000);
-
       console.log("  ─────────────────────────────────────");
+
       if (code === 0) {
-        ok(`Cycle complete in ${elapsed}s (${taskCount} task(s))`);
+        ok(`${phase} phase complete in ${elapsed}s`);
       } else {
         err(`Claude exited with code ${code} after ${elapsed}s`);
       }
