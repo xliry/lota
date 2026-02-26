@@ -7,14 +7,19 @@ import { lota } from "./github.js";
 
 // ── Config ──────────────────────────────────────────────────────
 
+type AgentMode = "auto" | "supervised";
+
 interface AgentConfig {
   configPath: string;
   model: string;
   interval: number;
   once: boolean;
+  mode: AgentMode;
   agentName: string;
   githubToken: string;
   githubRepo: string;
+  telegramBotToken: string;
+  telegramChatId: string;
 }
 
 function parseArgs(): AgentConfig {
@@ -23,6 +28,7 @@ function parseArgs(): AgentConfig {
   let once = false;
   let mcpConfig = "";
   let model = "sonnet";
+  let mode: AgentMode = "auto";
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -30,6 +36,7 @@ function parseArgs(): AgentConfig {
       case "--once": case "-1": once = true; break;
       case "--config": case "-c": mcpConfig = args[++i]; break;
       case "--model": case "-m": model = args[++i]; break;
+      case "--mode": mode = args[++i] as AgentMode; break;
       case "--help": case "-h":
         console.log(`Usage: lota-agent [options]
 
@@ -40,6 +47,7 @@ Options:
   -c, --config <path>   MCP config file (default: .mcp.json)
   -m, --model <model>   Claude model (default: sonnet)
   -i, --interval <sec>  Poll interval in seconds (default: 15)
+  --mode <auto|supervised>  auto = direct execution, supervised = Telegram approval (default: auto)
   -1, --once            Run once then exit
   -h, --help            Show this help`);
         process.exit(0);
@@ -66,6 +74,7 @@ Options:
 
   // Read credentials from .mcp.json
   let githubToken = "", githubRepo = "", agentName = "";
+  let telegramBotToken = "", telegramChatId = "";
   if (configPath) {
     try {
       const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
@@ -73,6 +82,8 @@ Options:
       githubToken = env.GITHUB_TOKEN || "";
       githubRepo = env.GITHUB_REPO || "";
       agentName = env.AGENT_NAME || "";
+      telegramBotToken = env.TELEGRAM_BOT_TOKEN || "";
+      telegramChatId = env.TELEGRAM_CHAT_ID || "";
     } catch (e) {
       console.error(`Warning: could not read ${configPath}: ${(e as Error).message}`);
     }
@@ -96,7 +107,117 @@ Options:
   if (!githubRepo) githubRepo = process.env.GITHUB_REPO || "xliry/lota-agents";
   if (!agentName) agentName = process.env.AGENT_NAME || "lota";
 
-  return { configPath, model, interval, once, agentName, githubToken, githubRepo };
+  // Supervised mode requires Telegram
+  if (mode === "supervised" && !telegramBotToken) {
+    console.log("\n  Supervised mode requires Telegram. Let's set it up:\n");
+    console.log("  1. Open @BotFather on Telegram, send /newbot");
+    console.log("  2. Name it anything (e.g. 'My Lota')");
+    console.log("  3. Set TELEGRAM_BOT_TOKEN in .mcp.json under mcpServers.lota.env");
+    console.log("  4. Run again with --mode supervised\n");
+    process.exit(1);
+  }
+
+  return { configPath, model, interval, once, mode, agentName, githubToken, githubRepo, telegramBotToken, telegramChatId };
+}
+
+// ── Telegram API ────────────────────────────────────────────────
+
+async function tgApi(botToken: string, method: string, body?: Record<string, unknown>): Promise<unknown> {
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json() as { ok: boolean; result?: unknown; description?: string };
+  if (!data.ok) throw new Error(`Telegram ${method}: ${data.description}`);
+  return data.result;
+}
+
+async function tgSend(config: AgentConfig, text: string, inlineKeyboard?: unknown[][]): Promise<unknown> {
+  if (!config.telegramBotToken || !config.telegramChatId) return null;
+  const body: Record<string, unknown> = {
+    chat_id: config.telegramChatId,
+    text,
+    parse_mode: "Markdown",
+  };
+  if (inlineKeyboard) {
+    body.reply_markup = { inline_keyboard: inlineKeyboard };
+  }
+  return tgApi(config.telegramBotToken, "sendMessage", body);
+}
+
+async function tgSetupChatId(config: AgentConfig): Promise<string> {
+  // Poll for /start message to discover chat_id
+  console.log("\n  Waiting for you to send /start to your Telegram bot...");
+  let lastUpdateId = 0;
+  for (let attempt = 0; attempt < 60; attempt++) { // 5 minutes max
+    const data = await tgApi(config.telegramBotToken, "getUpdates", {
+      offset: lastUpdateId + 1,
+      timeout: 5,
+    }) as Array<{ update_id: number; message?: { chat: { id: number }; text?: string } }>;
+
+    for (const update of data) {
+      lastUpdateId = update.update_id;
+      if (update.message?.text === "/start") {
+        const chatId = String(update.message.chat.id);
+        // Save to .mcp.json
+        if (config.configPath) {
+          const cfg = JSON.parse(readFileSync(config.configPath, "utf-8"));
+          if (cfg.mcpServers?.lota?.env) {
+            cfg.mcpServers.lota.env.TELEGRAM_CHAT_ID = chatId;
+            writeFileSync(config.configPath, JSON.stringify(cfg, null, 2) + "\n");
+          }
+        }
+        // Send confirmation
+        await tgApi(config.telegramBotToken, "sendMessage", {
+          chat_id: chatId,
+          text: "✅ Connected to Lota! You'll receive task notifications and approval requests here.",
+        });
+        return chatId;
+      }
+    }
+  }
+  throw new Error("Telegram setup timed out. Send /start to your bot and try again.");
+}
+
+async function tgWaitForApproval(config: AgentConfig, taskId: number, taskTitle: string): Promise<boolean> {
+  // Send approval request with inline buttons
+  await tgSend(config, `📋 *Plan ready for approval*\n\nTask #${taskId}: ${taskTitle}\n\nReview the plan and approve or reject:`, [
+    [
+      { text: "✅ Approve", callback_data: `approve_${taskId}` },
+      { text: "❌ Reject", callback_data: `reject_${taskId}` },
+    ],
+  ]);
+
+  // Poll for callback response
+  let lastUpdateId = 0;
+  while (true) {
+    const data = await tgApi(config.telegramBotToken, "getUpdates", {
+      offset: lastUpdateId + 1,
+      timeout: 30, // long poll
+    }) as Array<{
+      update_id: number;
+      callback_query?: { id: string; data?: string; message?: { chat: { id: number } } };
+    }>;
+
+    for (const update of data) {
+      lastUpdateId = update.update_id;
+      const cb = update.callback_query;
+      if (!cb?.data) continue;
+
+      // Acknowledge the button press
+      await tgApi(config.telegramBotToken, "answerCallbackQuery", { callback_query_id: cb.id });
+
+      if (cb.data === `approve_${taskId}`) {
+        await tgSend(config, `🚀 Task #${taskId} approved! Executing now.`);
+        return true;
+      }
+      if (cb.data === `reject_${taskId}`) {
+        await tgSend(config, `⏸ Task #${taskId} rejected. Add a comment on GitHub with feedback.`);
+        return false;
+      }
+    }
+  }
 }
 
 // ── Logging (stdout + file) ──────────────────────────────────────
@@ -543,12 +664,25 @@ function sleep(sec: number): Promise<void> {
 async function main() {
   const config = parseArgs();
 
+  // Telegram setup for supervised mode
+  if (config.mode === "supervised" && !config.telegramChatId) {
+    try {
+      config.telegramChatId = await tgSetupChatId(config);
+      ok("Telegram connected!");
+    } catch (e) {
+      err((e as Error).message);
+      process.exit(1);
+    }
+  }
+
+  const modeLabel = config.mode === "supervised" ? "supervised (Telegram)" : "autonomous";
   const banner = [
     "",
     "  ┌─────────────────────────┐",
     "  │         Lota            │",
     "  └─────────────────────────┘",
     `  agent:    ${config.agentName}`,
+    `  mode:     ${modeLabel}`,
     `  model:    ${config.model}`,
     `  config:   ${config.configPath}`,
     `  interval: ${config.interval}s`,
@@ -562,6 +696,10 @@ async function main() {
 
   log("━━━ Agent active, waiting for tasks ━━━");
   console.log("");
+
+  if (config.mode === "supervised") {
+    await tgSend(config, "🤖 Lota is online. Watching for tasks.");
+  }
 
   // Main loop: poll → check → spawn → sleep
   while (!stopped) {
@@ -584,20 +722,39 @@ async function main() {
       const taskCount = work.tasks.length;
       const commentCount = work.commentUpdates.length;
 
-      if (phase === "comments") {
+      // ── AUTO MODE: skip plan phase, go straight to execute ──
+      if (config.mode === "auto") {
+        if (phase === "plan") {
+          // In auto mode, treat assigned tasks as ready to execute
+          work = { phase: "execute", tasks: work.tasks, commentUpdates: [] };
+        }
+      }
+
+      if (work.phase === "comments") {
         ok(`${commentCount} task(s) have new comments`);
         for (const cu of work.commentUpdates) {
           dim(`  💬 #${cu.id}: ${cu.title} (${cu.new_comment_count} new)`);
         }
-      } else if (phase === "plan") {
+        if (config.mode === "supervised") {
+          for (const cu of work.commentUpdates) {
+            await tgSend(config, `💬 New comment on task #${cu.id}: ${cu.title}`);
+          }
+        }
+      } else if (work.phase === "plan") {
+        // Only in supervised mode
         ok(`${taskCount} new task(s) — creating plans for approval`);
         for (const t of work.tasks) {
           dim(`  📋 #${t.id}: ${t.title}`);
         }
-      } else if (phase === "execute") {
-        ok(`${taskCount} approved task(s) — executing`);
+      } else if (work.phase === "execute") {
+        ok(`${taskCount} task(s) — executing`);
         for (const t of work.tasks) {
           dim(`  🚀 #${t.id}: ${t.title}`);
+        }
+        if (config.mode === "supervised") {
+          for (const t of work.tasks) {
+            await tgSend(config, `🚀 Executing task #${t.id}: ${t.title}`);
+          }
         }
       }
 
@@ -608,9 +765,34 @@ async function main() {
       console.log("  ─────────────────────────────────────");
 
       if (code === 0) {
-        ok(`${phase} phase complete in ${elapsed}s`);
+        ok(`${work.phase} phase complete in ${elapsed}s`);
+
+        // SUPERVISED: after plan phase, wait for Telegram approval
+        if (config.mode === "supervised" && phase === "plan") {
+          for (const t of work.tasks) {
+            ok(`Waiting for Telegram approval for task #${t.id}...`);
+            const approved = await tgWaitForApproval(config, t.id, t.title);
+            if (approved) {
+              // Set status to approved via GitHub
+              await lota("POST", `/tasks/${t.id}/status`, { status: "approved" });
+              ok(`Task #${t.id} approved via Telegram`);
+            } else {
+              ok(`Task #${t.id} rejected via Telegram — skipping`);
+            }
+          }
+        }
+
+        // Notify completion
+        if (config.mode === "supervised" && work.phase === "execute") {
+          for (const t of work.tasks) {
+            await tgSend(config, `✅ Task #${t.id} completed: ${t.title}`);
+          }
+        }
       } else {
         err(`Claude exited with code ${code} after ${elapsed}s`);
+        if (config.mode === "supervised") {
+          await tgSend(config, `❌ Error: Claude exited with code ${code} after ${elapsed}s`);
+        }
       }
     }
 

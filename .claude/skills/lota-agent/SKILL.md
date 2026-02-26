@@ -129,9 +129,16 @@ Merge — don't overwrite existing permissions.
 **STOP HERE if this was a first-time setup. Do NOT start the daemon yet.**
 The MCP server needs Claude Code to restart first.
 
-### Phase 3: Start the agent
+### Phase 3: Choose mode
 
-This runs when Lota is already built and configured.
+Ask the user:
+> "How do you want Lota to run?
+> - **Auto** — tasks execute immediately, you watch from PC
+> - **Supervised** — you approve each task via Telegram before execution"
+
+Default to **auto** if user doesn't specify.
+
+### Phase 4: Start the agent
 
 **Kill any existing daemon:**
 ```bash
@@ -140,9 +147,19 @@ pkill -f "node.*daemon" 2>/dev/null; true
 (Exit code 144 is normal — ignore it.)
 
 **Start daemon in background** (use `run_in_background: true`, `timeout: 600000`):
+
+For **auto** mode:
 ```bash
-cd ~/.lota/lota && node dist/daemon.js --interval 15 2>&1
+cd ~/.lota/lota && node dist/daemon.js --interval 15 --mode auto 2>&1
 ```
+
+For **supervised** mode:
+```bash
+cd ~/.lota/lota && node dist/daemon.js --interval 15 --mode supervised 2>&1
+```
+
+Note: Supervised mode requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.mcp.json`.
+If not configured, the daemon will guide the user through Telegram setup.
 
 **Wait briefly then check:**
 ```bash
@@ -152,9 +169,13 @@ sleep 5
 Read `~/.lota/agent.log` to confirm it started.
 
 **Report to user:**
-> "Lota is running! Watching [repo] every 15 seconds.
->
-> Create tasks from `/lota-hub` or directly on GitHub — I'll pick them up.
-> Check logs anytime: `cat ~/.lota/agent.log`"
+
+For auto mode:
+> "Lota is running in auto mode! Tasks execute immediately.
+> Watch progress: `cat ~/.lota/agent.log`"
+
+For supervised mode:
+> "Lota is running in supervised mode! You'll get Telegram notifications.
+> Approve tasks from your phone, watch progress here."
 
 That's ALL. Do NOT run diagnostics, version checks, or anything else.
