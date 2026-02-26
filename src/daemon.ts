@@ -72,6 +72,10 @@ Options:
 
   // .mcp.json is optional now — token can come from env or gh auth
 
+  // Expand ${VAR} references to actual env values
+  const expandEnv = (val: string): string =>
+    val.replace(/\$\{(\w+)\}/g, (_, k) => process.env[k] || "");
+
   // Read credentials from .mcp.json
   let githubToken = "", githubRepo = "", agentName = "";
   let telegramBotToken = "", telegramChatId = "";
@@ -79,11 +83,11 @@ Options:
     try {
       const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
       const env = cfg.mcpServers?.lota?.env || {};
-      githubToken = env.GITHUB_TOKEN || "";
-      githubRepo = env.GITHUB_REPO || "";
-      agentName = env.AGENT_NAME || "";
-      telegramBotToken = env.TELEGRAM_BOT_TOKEN || "";
-      telegramChatId = env.TELEGRAM_CHAT_ID || "";
+      githubToken = expandEnv(env.GITHUB_TOKEN || "");
+      githubRepo = expandEnv(env.GITHUB_REPO || "");
+      agentName = expandEnv(env.AGENT_NAME || "");
+      telegramBotToken = expandEnv(env.TELEGRAM_BOT_TOKEN || "");
+      telegramChatId = expandEnv(env.TELEGRAM_CHAT_ID || "");
     } catch (e) {
       console.error(`Warning: could not read ${configPath}: ${(e as Error).message}`);
     }
@@ -536,6 +540,15 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
     cleanEnv.GITHUB_TOKEN = config.githubToken;
     cleanEnv.GITHUB_REPO = config.githubRepo;
     cleanEnv.AGENT_NAME = config.agentName;
+
+    // Configure git to use GITHUB_TOKEN for authentication
+    // This makes git clone/push work without tokens in URLs
+    cleanEnv.GIT_ASKPASS = "/bin/echo";
+    cleanEnv.GIT_CONFIG_COUNT = "2";
+    cleanEnv.GIT_CONFIG_KEY_0 = "credential.https://github.com.helper";
+    cleanEnv.GIT_CONFIG_VALUE_0 = `!f() { echo "username=x-access-token"; echo "password=${config.githubToken}"; }; f`;
+    cleanEnv.GIT_CONFIG_KEY_1 = "credential.helper";
+    cleanEnv.GIT_CONFIG_VALUE_1 = "";
 
     const isRoot = process.getuid?.() === 0;
     const args = [
