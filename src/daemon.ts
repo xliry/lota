@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { lota } from "./github.js";
@@ -62,27 +62,39 @@ Options:
   }
   const configPath = mcpConfig ? resolve(mcpConfig) : findMcpConfig();
 
-  if (!configPath) {
-    console.error("Error: .mcp.json not found. Run: lota-agent --help");
-    process.exit(1);
-  }
+  // .mcp.json is optional now — token can come from env or gh auth
 
   // Read credentials from .mcp.json
   let githubToken = "", githubRepo = "", agentName = "";
-  try {
-    const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
-    const env = cfg.mcpServers?.lota?.env || {};
-    githubToken = env.GITHUB_TOKEN || "";
-    githubRepo = env.GITHUB_REPO || "";
-    agentName = env.AGENT_NAME || "";
-  } catch (e) {
-    console.error(`Error reading ${configPath}: ${(e as Error).message}`);
+  if (configPath) {
+    try {
+      const cfg = JSON.parse(readFileSync(configPath, "utf-8"));
+      const env = cfg.mcpServers?.lota?.env || {};
+      githubToken = env.GITHUB_TOKEN || "";
+      githubRepo = env.GITHUB_REPO || "";
+      agentName = env.AGENT_NAME || "";
+    } catch (e) {
+      console.error(`Warning: could not read ${configPath}: ${(e as Error).message}`);
+    }
+  }
+
+  // Token discovery fallback: .mcp.json → env → gh auth token
+  if (!githubToken) {
+    githubToken = process.env.GITHUB_TOKEN || "";
+  }
+  if (!githubToken) {
+    try {
+      githubToken = execSync("gh auth token 2>/dev/null", { encoding: "utf-8" }).trim();
+    } catch { /* gh not installed or not logged in */ }
+  }
+  if (!githubToken) {
+    console.error("Error: GitHub token not found. Checked: .mcp.json, $GITHUB_TOKEN env, gh auth token");
     process.exit(1);
   }
 
-  if (!githubToken) { console.error("Error: GITHUB_TOKEN missing in .mcp.json"); process.exit(1); }
-  if (!githubRepo) { console.error("Error: GITHUB_REPO missing in .mcp.json"); process.exit(1); }
-  if (!agentName) { console.error("Error: AGENT_NAME missing in .mcp.json"); process.exit(1); }
+  // Defaults
+  if (!githubRepo) githubRepo = process.env.GITHUB_REPO || "xliry/lota-agents";
+  if (!agentName) agentName = process.env.AGENT_NAME || "lota";
 
   return { configPath, model, interval, once, agentName, githubToken, githubRepo };
 }
@@ -295,7 +307,7 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       "--output-format", "stream-json",
       ...(isRoot ? [] : ["--dangerously-skip-permissions"]),
       "--model", config.model,
-      "--mcp-config", config.configPath,
+      ...(config.configPath ? ["--mcp-config", config.configPath] : []),
       "-p", buildPrompt(config.agentName, work, config),
     ];
 
