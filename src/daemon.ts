@@ -121,9 +121,29 @@ const err = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${
 
 // ── Pre-check (zero-cost, no LLM) ──────────────────────────────
 
-interface WorkData {
-  tasks: { id: number; title: string; status: string; body?: string; workspace?: string }[];
+interface TaskInfo {
+  id: number;
+  title: string;
+  status: string;
+  body?: string;
+  workspace?: string;
+  comment_count?: number;
 }
+
+interface CommentUpdate {
+  id: number;
+  title: string;
+  workspace?: string;
+  new_comment_count: number;
+}
+
+interface WorkData {
+  tasks: TaskInfo[];
+  commentUpdates: CommentUpdate[];
+}
+
+// Track comment counts for in-progress tasks
+const lastSeenComments = new Map<number, number>();
 
 async function checkForWork(config: AgentConfig): Promise<WorkData> {
   // Set env vars so github.ts can use them
@@ -131,8 +151,43 @@ async function checkForWork(config: AgentConfig): Promise<WorkData> {
   process.env.GITHUB_REPO = config.githubRepo;
   process.env.AGENT_NAME = config.agentName;
 
-  const data = await lota("GET", "/sync") as { tasks: WorkData["tasks"] };
-  return { tasks: data.tasks || [] };
+  const data = await lota("GET", "/sync") as {
+    tasks: TaskInfo[];
+    in_progress: (TaskInfo & { comment_count: number })[];
+  };
+
+  const tasks = data.tasks || [];
+  const inProgress = data.in_progress || [];
+  const commentUpdates: CommentUpdate[] = [];
+
+  // Check for new comments on in-progress tasks
+  for (const task of inProgress) {
+    const lastSeen = lastSeenComments.get(task.id) ?? -1;
+    const currentCount = task.comment_count ?? 0;
+
+    if (lastSeen === -1) {
+      // First time seeing this task — store current count, don't trigger
+      lastSeenComments.set(task.id, currentCount);
+    } else if (currentCount > lastSeen) {
+      // New comments detected!
+      const newCount = currentCount - lastSeen;
+      commentUpdates.push({
+        id: task.id,
+        title: task.title,
+        workspace: task.workspace ?? undefined,
+        new_comment_count: newCount,
+      });
+      lastSeenComments.set(task.id, currentCount);
+    }
+  }
+
+  // Clean up tracking for tasks no longer in-progress
+  const activeIds = new Set(inProgress.map(t => t.id));
+  for (const id of lastSeenComments.keys()) {
+    if (!activeIds.has(id)) lastSeenComments.delete(id);
+  }
+
+  return { tasks, commentUpdates };
 }
 
 // ── Prompt ──────────────────────────────────────────────────────
@@ -172,6 +227,26 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     "  Launch multiple Explore agents in parallel when investigating different areas.",
   );
 
+  // Comment updates (can happen independently of new tasks)
+  if (work.commentUpdates.length) {
+    lines.push("", "── NEW COMMENTS DETECTED ──");
+    lines.push("  PRIORITY: Read these first — the user may be giving feedback or new instructions.");
+    for (const cu of work.commentUpdates) {
+      lines.push(`  Task #${cu.id}: "${cu.title}" has ${cu.new_comment_count} new comment(s)`);
+      lines.push(`    → Read them: lota("GET", "/tasks/${cu.id}")`);
+      if (cu.workspace) {
+        lines.push(`    → Workspace: ${cu.workspace}`);
+      }
+    }
+    lines.push(
+      "",
+      "  After reading new comments:",
+      "  - If the user is giving feedback → adjust your work accordingly",
+      "  - If the user is asking a question → reply with a comment",
+      "  - If the user is changing requirements → update your approach",
+    );
+  }
+
   if (work.tasks.length) {
     lines.push("", "── ASSIGNED TASKS ──");
     for (const t of work.tasks) {
@@ -183,6 +258,7 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
         lines.push("", "  ── TASK BODY ──", t.body, "  ── END BODY ──");
       }
     }
+
     lines.push(
       "",
       "  IMPORTANT: Before starting any task, ALWAYS read the full task details and comments first:",
@@ -469,9 +545,27 @@ async function main() {
     }
 
     const taskCount = work.tasks.length;
+    const commentCount = work.commentUpdates.length;
 
-    if (taskCount === 0) {
+    if (taskCount === 0 && commentCount === 0) {
       dim(`No pending work — skipped Claude spawn`);
+    } else if (taskCount === 0 && commentCount > 0) {
+      ok(`No new tasks, but ${commentCount} task(s) have new comments`);
+      for (const cu of work.commentUpdates) {
+        dim(`  💬 #${cu.id}: ${cu.title} (${cu.new_comment_count} new comment(s))`);
+      }
+      console.log("  ─────────────────────────────────────");
+
+      const cycleStart = Date.now();
+      const code = await runClaude(config, work);
+      const elapsed = Math.round((Date.now() - cycleStart) / 1000);
+
+      console.log("  ─────────────────────────────────────");
+      if (code === 0) {
+        ok(`Comment handling complete in ${elapsed}s`);
+      } else {
+        err(`Claude exited with code ${code} after ${elapsed}s`);
+      }
     } else {
       ok(`Found ${taskCount} task(s)`);
       for (const t of work.tasks) {

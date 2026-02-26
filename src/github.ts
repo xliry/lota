@@ -259,7 +259,16 @@ const addComment: Handler = async (params, _query, body) => {
 
 const sync: Handler = async () => {
   const tasks = await getTasks({}, new URLSearchParams());
-  return { tasks };
+
+  // Also fetch in-progress tasks for comment detection
+  const inProgressLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}in-progress`;
+  const inProgressIssues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(inProgressLabels)}&state=open`) as Array<GhIssue & { comments: number }>;
+  const inProgress = inProgressIssues.map(issue => ({
+    ...extractFromIssue(issue),
+    comment_count: issue.comments ?? 0,
+  }));
+
+  return { tasks, in_progress: inProgress };
 };
 
 // ── Route table ─────────────────────────────────────────────
