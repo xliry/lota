@@ -8,8 +8,8 @@ Paste this into Claude Code:
 
 ```
 Set up Lota:
-1. git clone https://github.com/xliry/lota.git ~/.lota/lota && cd ~/.lota/lota && npm install && npm run build
-2. Read ~/.lota/lota/SETUP.md and follow each step conversationally
+1. git clone https://github.com/xliry/lota.git ~/lota && cd ~/lota && npm install && npm run build
+2. Read ~/lota/SETUP.md and follow each step conversationally
 ```
 
 That's it. The agent handles the rest.

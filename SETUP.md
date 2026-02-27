@@ -43,7 +43,7 @@ Read the current project's `.mcp.json` (if it exists). Merge the lota config int
   "mcpServers": {
     "lota": {
       "command": "node",
-      "args": ["~/.lota/lota/dist/index.js"],
+      "args": ["~/lota/dist/index.js"],
       "env": {
         "GITHUB_REPO": "xliry/lota-agents",
         "AGENT_NAME": "lota"
@@ -65,8 +65,8 @@ Copy the Lota skills into the current project:
 
 ```bash
 mkdir -p .claude/skills/lota-agent .claude/skills/lota-hub
-cp ~/.lota/lota/.claude/skills/lota-agent/SKILL.md .claude/skills/lota-agent/SKILL.md
-cp ~/.lota/lota/.claude/skills/lota-hub/SKILL.md .claude/skills/lota-hub/SKILL.md
+cp ~/lota/.claude/skills/lota-agent/SKILL.md .claude/skills/lota-agent/SKILL.md
+cp ~/lota/.claude/skills/lota-hub/SKILL.md .claude/skills/lota-hub/SKILL.md
 ```
 
 Also ensure `.claude/settings.json` allows the lota MCP tool:

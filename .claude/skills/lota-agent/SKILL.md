@@ -19,7 +19,7 @@ Always make the next step obvious. Never dump a wall of text.
 ### Phase 1: Check if Lota is built
 
 ```bash
-test -f ~/.lota/lota/dist/daemon.js && echo "BUILT" || echo "NOT_BUILT"
+test -f ~/lota/dist/daemon.js && echo "BUILT" || echo "NOT_BUILT"
 ```
 
 **If NOT_BUILT**, tell the user:
@@ -28,7 +28,7 @@ test -f ~/.lota/lota/dist/daemon.js && echo "BUILT" || echo "NOT_BUILT"
 
 Then build:
 ```bash
-git clone https://github.com/xliry/lota.git ~/.lota/lota && cd ~/.lota/lota && npm install && npm run build
+git clone https://github.com/xliry/lota.git ~/lota && cd ~/lota && npm install && npm run build
 ```
 
 Show progress naturally: "Cloning... Building... Done!"
@@ -107,7 +107,7 @@ printenv GITHUB_TOKEN | head -c 10
     "lota": {
       "type": "stdio",
       "command": "node",
-      "args": ["<absolute-path-to-home>/.lota/lota/dist/index.js"],
+      "args": ["<absolute-path-to-home>/lota/dist/index.js"],
       "env": {
         "GITHUB_REPO": "<repo>",
         "AGENT_NAME": "lota"
@@ -124,7 +124,7 @@ printenv GITHUB_TOKEN | head -c 10
     "lota": {
       "type": "stdio",
       "command": "node",
-      "args": ["<absolute-path-to-home>/.lota/lota/dist/index.js"],
+      "args": ["<absolute-path-to-home>/lota/dist/index.js"],
       "env": {
         "GITHUB_TOKEN": "<the-actual-token>",
         "GITHUB_REPO": "<repo>",
@@ -145,8 +145,8 @@ IMPORTANT:
 Symlink skill files so they stay in sync with the repo (no duplicate copies):
 ```bash
 rm -rf ~/.claude/skills/lota-agent ~/.claude/skills/lota-hub 2>/dev/null
-ln -sf ~/.lota/lota/.claude/skills/lota-agent ~/.claude/skills/lota-agent
-ln -sf ~/.lota/lota/.claude/skills/lota-hub ~/.claude/skills/lota-hub
+ln -sf ~/lota/.claude/skills/lota-agent ~/.claude/skills/lota-agent
+ln -sf ~/lota/.claude/skills/lota-hub ~/.claude/skills/lota-hub
 ```
 
 Ensure `~/.claude/settings.json` includes `"mcp__lota__lota"` in the allow list.
@@ -181,12 +181,12 @@ pkill -f "node.*daemon" 2>/dev/null; true
 
 For **auto** mode:
 ```bash
-cd ~/.lota/lota && node dist/daemon.js --interval 15 --mode auto 2>&1
+cd ~/lota && node dist/daemon.js --interval 15 --mode auto 2>&1
 ```
 
 For **supervised** mode:
 ```bash
-cd ~/.lota/lota && node dist/daemon.js --interval 15 --mode supervised 2>&1
+cd ~/lota && node dist/daemon.js --interval 15 --mode supervised 2>&1
 ```
 
 Note: Supervised mode requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.mcp.json`.
