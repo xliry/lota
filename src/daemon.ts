@@ -197,9 +197,11 @@ async function tgWaitForApproval(config: AgentConfig, taskId: number, taskTitle:
     ],
   ]);
 
-  // Poll for callback response
+  // Poll for callback response (30 min timeout to prevent infinite hang)
+  const APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
+  const deadline = Date.now() + APPROVAL_TIMEOUT_MS;
   let lastUpdateId = 0;
-  while (true) {
+  while (Date.now() < deadline) {
     const data = await tgApi(config.telegramBotToken, "getUpdates", {
       offset: lastUpdateId + 1,
       timeout: 30, // long poll
@@ -226,6 +228,10 @@ async function tgWaitForApproval(config: AgentConfig, taskId: number, taskTitle:
       }
     }
   }
+
+  // Timeout reached — reject by default
+  await tgSend(config, `⏸ Task #${taskId} approval timed out (30 min). Skipping.`);
+  return false;
 }
 
 // ── Logging (stdout + file) ──────────────────────────────────────
@@ -870,7 +876,8 @@ async function main() {
   console.log("");
 
   if (config.mode === "supervised") {
-    await tgSend(config, "🤖 Lota is online. Watching for tasks.");
+    try { await tgSend(config, "🤖 Lota is online. Watching for tasks."); }
+    catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
   }
 
   // Main loop: poll → check → spawn → sleep
@@ -915,7 +922,8 @@ async function main() {
         }
         if (config.mode === "supervised") {
           for (const cu of work.commentUpdates) {
-            await tgSend(config, `💬 New comment on task #${cu.id}: ${cu.title}`);
+            try { await tgSend(config, `💬 New comment on task #${cu.id}: ${cu.title}`); }
+            catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
           }
         }
       } else if (work.phase === "plan") {
@@ -930,7 +938,8 @@ async function main() {
         }
         if (config.mode === "supervised") {
           for (const t of work.tasks) {
-            await tgSend(config, `🚀 Executing task #${t.id}: ${t.title}`);
+            try { await tgSend(config, `🚀 Executing task #${t.id}: ${t.title}`); }
+            catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
           }
         }
       }
@@ -990,13 +999,15 @@ async function main() {
         // Notify completion
         if (config.mode === "supervised" && work.phase === "execute") {
           for (const t of work.tasks) {
-            await tgSend(config, `✅ Task #${t.id} completed: ${t.title}`);
+            try { await tgSend(config, `✅ Task #${t.id} completed: ${t.title}`); }
+            catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
           }
         }
       } else {
         err(`Claude exited with code ${code} after ${elapsed}s`);
         if (config.mode === "supervised") {
-          await tgSend(config, `❌ Error: Claude exited with code ${code} after ${elapsed}s`);
+          try { await tgSend(config, `❌ Error: Claude exited with code ${code} after ${elapsed}s`); }
+          catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
         }
       }
 
@@ -1007,4 +1018,7 @@ async function main() {
   }
 }
 
-main();
+main().catch((e) => {
+  err(`Fatal: ${(e as Error).message}`);
+  process.exit(1);
+});
