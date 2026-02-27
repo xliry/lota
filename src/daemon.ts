@@ -16,6 +16,7 @@ interface AgentConfig {
   once: boolean;
   mode: AgentMode;
   agentName: string;
+  maxTasksPerCycle: number;
   githubToken: string;
   githubRepo: string;
   telegramBotToken: string;
@@ -29,6 +30,7 @@ function parseArgs(): AgentConfig {
   let mcpConfig = "";
   let model = "sonnet";
   let mode: AgentMode = "auto";
+  let maxTasksPerCycle = 1;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -37,6 +39,7 @@ function parseArgs(): AgentConfig {
       case "--config": case "-c": mcpConfig = args[++i]; break;
       case "--model": case "-m": model = args[++i]; break;
       case "--mode": mode = args[++i] as AgentMode; break;
+      case "--max-tasks": case "-t": maxTasksPerCycle = Math.max(1, parseInt(args[++i], 10)); break;
       case "--help": case "-h":
         console.log(`Usage: lota-agent [options]
 
@@ -47,6 +50,7 @@ Options:
   -c, --config <path>   MCP config file (default: .mcp.json)
   -m, --model <model>   Claude model (default: sonnet)
   -i, --interval <sec>  Poll interval in seconds (default: 15)
+  -t, --max-tasks <n>   Max tasks per execute cycle (default: 1)
   --mode <auto|supervised>  auto = direct execution, supervised = Telegram approval (default: auto)
   -1, --once            Run once then exit
   -h, --help            Show this help`);
@@ -121,7 +125,7 @@ Options:
     process.exit(1);
   }
 
-  return { configPath, model, interval, once, mode, agentName, githubToken, githubRepo, telegramBotToken, telegramChatId };
+  return { configPath, model, interval, once, mode, agentName, maxTasksPerCycle, githubToken, githubRepo, telegramBotToken, telegramChatId };
 }
 
 // ── Telegram API ────────────────────────────────────────────────
@@ -343,7 +347,8 @@ async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
     return { phase: "comments", tasks: [], commentUpdates };
   }
   if (approved.length) {
-    return { phase: "execute", tasks: approved, commentUpdates: [] };
+    const sorted = approved.sort((a, b) => a.id - b.id);
+    return { phase: "execute", tasks: sorted.slice(0, config.maxTasksPerCycle), commentUpdates: [] };
   }
   if (assigned.length) {
     return { phase: "plan", tasks: assigned, commentUpdates: [] };
@@ -383,7 +388,10 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     "    - Only use TodoWrite at most twice: once at the start to plan, once at the end to verify.",
     "    - Minimize redundant file reads — if you already read a file, don't read it again unless it was modified by someone else.",
     "    - ALWAYS commit and push your changes to the remote repository before completing a task.",
-    "    - BEFORE pushing: run `npm run build` (or the project's build command) to verify no compilation errors. Fix any TypeScript/compilation errors before pushing.",
+    "    - BEFORE pushing: run the FULL build command `npm run build` (NOT just `npx tsc --noEmit` or `tsc` alone).",
+    "    - `npm run build` catches bundler errors, missing assets, and more than just types.",
+    "    - If no `build` script in package.json, fallback to `npx tsc`. Never skip build.",
+    "    - If build fails, fix ALL errors before committing. Do NOT push broken code.",
   ];
 
   // Subagent instructions
@@ -463,6 +471,10 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     }
     lines.push(
       "",
+      "  IMPORTANT: You are working on exactly ONE task this cycle. Make exactly ONE focused commit.",
+      "  Commit message MUST reference the task: e.g., \"feat: add X (#42)\"",
+      "  Do NOT batch changes from other tasks.",
+      "",
       "  IMPORTANT: Read the full task details AND comments (including the plan) first:",
       `    lota("GET", "/tasks/<id>")`,
       "  Comments may contain approval notes, adjustments, or extra instructions from the user.",
@@ -471,7 +483,7 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
       `    1. Read: lota("GET", "/tasks/<id>") — check plan + any user comments`,
       `    2. Set status: lota("POST", "/tasks/<id>/status", {"status": "in-progress"})`,
       "    3. Execute the plan. Use subagents for parallel work if needed.",
-      "    4. BEFORE pushing: run `npm run build` (or the project's build command) to verify no compilation errors. If build fails, fix all errors before committing.",
+      "    4. BEFORE pushing: run `npm run build` (NOT `npx tsc --noEmit` alone). If build fails, fix ALL errors before committing. Never push broken code.",
       `    5. Complete: lota("POST", "/tasks/<id>/complete", {"summary": "...", "modified_files": [], "new_files": []})`,
     );
   }
@@ -547,6 +559,52 @@ function formatEvent(event: any) {
     const turns = event.num_turns || 0;
     write("✅", `Done — ${turns} turns, ${dur}, ${cost}`);
     return;
+  }
+}
+
+// ── Workspace resolution ────────────────────────────────────────
+
+function resolveWorkspace(work: WorkData): string {
+  const rawWorkspace = work.tasks[0]?.workspace;
+  const home = process.env.HOME || "/root";
+  const taskWorkspace = rawWorkspace ? join(home, rawWorkspace) : null;
+  const resolvedWorkspace = rawWorkspace && existsSync(rawWorkspace) ? rawWorkspace
+    : taskWorkspace && existsSync(taskWorkspace) ? taskWorkspace
+    : null;
+  return resolvedWorkspace || process.cwd();
+}
+
+// ── Build verification ──────────────────────────────────────────
+
+function verifyBuild(workspace: string): { success: boolean; output: string } {
+  // Check if package.json has a build script
+  const pkgPath = join(workspace, "package.json");
+  let buildCmd = "";
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      if (pkg.scripts?.build) {
+        buildCmd = "npm run build";
+      }
+    } catch { /* invalid package.json */ }
+  }
+
+  if (!buildCmd) {
+    return { success: true, output: "No build script found — skipped" };
+  }
+
+  try {
+    const output = execSync(buildCmd, {
+      cwd: workspace,
+      encoding: "utf-8",
+      timeout: 120_000, // 2 min
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { success: true, output: output.slice(-500) };
+  } catch (e) {
+    const err = e as { stderr?: string; stdout?: string; message?: string };
+    const output = (err.stderr || err.stdout || err.message || "Unknown build error").slice(-1000);
+    return { success: false, output };
   }
 }
 
@@ -647,20 +705,13 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
     ];
 
     // Use workspace from first task as cwd if available
-    // Resolve relative paths (e.g. "kid-club" → "/home/user/kid-club")
+    const workingDir = resolveWorkspace(work);
     const rawWorkspace = work.tasks[0]?.workspace;
-    const home = process.env.HOME || "/root";
-    const taskWorkspace = rawWorkspace ? join(home, rawWorkspace) : null;
-    // Also check if the raw value itself is an absolute path that exists
-    const resolvedWorkspace = rawWorkspace && existsSync(rawWorkspace) ? rawWorkspace
-      : taskWorkspace && existsSync(taskWorkspace) ? taskWorkspace
-      : null;
-    const workingDir = resolvedWorkspace || process.cwd();
     if (rawWorkspace) {
-      if (resolvedWorkspace) {
-        ok(`Workspace: ${resolvedWorkspace}`);
+      if (workingDir !== process.cwd()) {
+        ok(`Workspace: ${workingDir}`);
       } else {
-        err(`Workspace not found: ${rawWorkspace} (tried ${taskWorkspace}) — using cwd`);
+        err(`Workspace not found: ${rawWorkspace} — using cwd`);
       }
     }
 
@@ -806,6 +857,7 @@ async function main() {
     `  model:    ${config.model}`,
     `  config:   ${config.configPath}`,
     `  interval: ${config.interval}s`,
+    `  max-tasks: ${config.maxTasksPerCycle} per execute cycle`,
     `  log:      ${LOG_FILE}`,
     "",
   ];
@@ -891,6 +943,26 @@ async function main() {
 
       if (code === 0) {
         ok(`${work.phase} phase complete in ${elapsed}s`);
+
+        // Post-execution build verification
+        if (work.phase === "execute") {
+          const ws = resolveWorkspace(work);
+          const build = verifyBuild(ws);
+          if (build.success) {
+            ok(`Build verification passed`);
+          } else {
+            err(`Build verification FAILED`);
+            err(build.output.slice(0, 300));
+            // Post warning comment on the task(s)
+            for (const t of work.tasks) {
+              try {
+                await lota("POST", `/tasks/${t.id}/comment`, {
+                  content: `⚠️ **Post-execution build verification failed**\n\n\`\`\`\n${build.output.slice(0, 500)}\n\`\`\`\n\nThe daemon detected a build failure after the agent completed. Manual review needed.`,
+                });
+              } catch { /* comment may fail */ }
+            }
+          }
+        }
 
         // AUTO: after plan phase, auto-approve and continue to execute
         if (config.mode === "auto" && phase === "plan") {
