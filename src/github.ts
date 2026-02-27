@@ -276,7 +276,15 @@ const sync: Handler = async () => {
     comment_count: issue.comments ?? 0,
   }));
 
-  return { assigned, approved, in_progress: inProgress };
+  // Fetch recently completed tasks (closed) so we can detect new comments on them
+  const completedLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}completed`;
+  const completedIssues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(completedLabels)}&state=closed&per_page=10&sort=updated&direction=desc`) as Array<GhIssue & { comments: number }>;
+  const recentlyCompleted = completedIssues.map(issue => ({
+    ...extractFromIssue(issue),
+    comment_count: issue.comments ?? 0,
+  }));
+
+  return { assigned, approved, in_progress: inProgress, recently_completed: recentlyCompleted };
 };
 
 // ── Route table ─────────────────────────────────────────────

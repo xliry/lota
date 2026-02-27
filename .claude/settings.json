@@ -8,7 +8,9 @@
       "Edit(*)",
       "Glob(*)",
       "Grep(*)",
-      "Task(*)"
+      "Task(*)",
+      "WebFetch(*)",
+      "WebSearch(*)"
     ]
   }
 }

@@ -281,11 +281,13 @@ async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
     assigned: TaskInfo[];
     approved: TaskInfo[];
     in_progress: (TaskInfo & { comment_count: number })[];
+    recently_completed: (TaskInfo & { comment_count: number })[];
   };
 
   const assigned = data.assigned || [];
   const approved = data.approved || [];
   const inProgress = data.in_progress || [];
+  const recentlyCompleted = data.recently_completed || [];
   const commentUpdates: CommentUpdate[] = [];
 
   // Check for new comments on in-progress tasks
@@ -307,8 +309,31 @@ async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
     }
   }
 
-  // Clean up tracking for tasks no longer in-progress
-  const activeIds = new Set(inProgress.map(t => t.id));
+  // Check for new comments on recently completed (closed) tasks
+  for (const task of recentlyCompleted) {
+    const lastSeen = lastSeenComments.get(task.id) ?? -1;
+    const currentCount = task.comment_count ?? 0;
+
+    if (lastSeen === -1) {
+      // First time seeing this completed task — record baseline without triggering
+      lastSeenComments.set(task.id, currentCount);
+    } else if (currentCount > lastSeen) {
+      const newCount = currentCount - lastSeen;
+      commentUpdates.push({
+        id: task.id,
+        title: task.title,
+        workspace: task.workspace ?? undefined,
+        new_comment_count: newCount,
+      });
+      lastSeenComments.set(task.id, currentCount);
+    }
+  }
+
+  // Clean up tracking for tasks no longer active or in recently-completed list
+  const activeIds = new Set([
+    ...inProgress.map(t => t.id),
+    ...recentlyCompleted.map(t => t.id),
+  ]);
   for (const id of lastSeenComments.keys()) {
     if (!activeIds.has(id)) lastSeenComments.delete(id);
   }
@@ -352,6 +377,12 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     "    - ALWAYS git pull before starting work to ensure you have the latest code.",
     "    - NEVER git clone a repo that already exists locally — use the existing directory.",
     "    - Use Write/Edit tools for file operations, NOT cat/heredoc via Bash.",
+    "",
+    "  PERFORMANCE RULES:",
+    "    - Do NOT call TodoWrite between every edit. Plan your work upfront, then execute edits in batch.",
+    "    - Only use TodoWrite at most twice: once at the start to plan, once at the end to verify.",
+    "    - Minimize redundant file reads — if you already read a file, don't read it again unless it was modified by someone else.",
+    "    - ALWAYS commit and push your changes to the remote repository before completing a task.",
   ];
 
   // Subagent instructions
@@ -558,29 +589,38 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       writeFileSync(tokenFile, config.githubToken, { mode: 0o600 });
     } catch { /* may fail in some environments */ }
 
-    // Ensure global Claude settings allow all tools (needed when --dangerously-skip-permissions
-    // doesn't work, e.g. root user where it requires interactive confirmation)
+    // Ensure global Claude settings allow all tools — merge with existing settings
+    // to avoid destroying user preferences like skipDangerousModePermissionPrompt
     const claudeSettingsDir = join(process.env.HOME || "/root", ".claude");
     const claudeSettingsFile = join(claudeSettingsDir, "settings.json");
     try {
       mkdirSync(claudeSettingsDir, { recursive: true });
-      const settings = {
+      let existingSettings: Record<string, unknown> = {};
+      try {
+        existingSettings = JSON.parse(readFileSync(claudeSettingsFile, "utf-8"));
+      } catch { /* file doesn't exist or invalid JSON */ }
+      const requiredPermissions = [
+        "mcp__lota__lota",
+        "Bash(*)",
+        "Read(*)",
+        "Write(*)",
+        "Edit(*)",
+        "Glob(*)",
+        "Grep(*)",
+        "Task(*)",
+        "WebFetch(*)",
+        "WebSearch(*)"
+      ];
+      const currentAllow: string[] = (existingSettings.permissions as { allow?: string[] })?.allow || [];
+      const mergedAllow = [...new Set([...currentAllow, ...requiredPermissions])];
+      const mergedSettings = {
+        ...existingSettings,
         permissions: {
-          allow: [
-            "mcp__lota__lota",
-            "Bash(*)",
-            "Read(*)",
-            "Write(*)",
-            "Edit(*)",
-            "Glob(*)",
-            "Grep(*)",
-            "Task(*)",
-            "WebFetch(*)",
-            "WebSearch(*)"
-          ]
-        }
+          ...(existingSettings.permissions as object || {}),
+          allow: mergedAllow,
+        },
       };
-      writeFileSync(claudeSettingsFile, JSON.stringify(settings, null, 2) + "\n");
+      writeFileSync(claudeSettingsFile, JSON.stringify(mergedSettings, null, 2) + "\n");
     } catch { /* may fail in some environments */ }
 
     // Also pass via env as backup
@@ -622,19 +662,29 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       }
     }
 
-    // Also write .claude/settings.json into the workspace cwd
+    // Also merge .claude/settings.json into the workspace cwd
     // Claude Code reads project-level settings which can override global ones
     try {
       const wsSettingsDir = join(workingDir, ".claude");
       mkdirSync(wsSettingsDir, { recursive: true });
-      writeFileSync(join(wsSettingsDir, "settings.json"), JSON.stringify({
+      const wsSettingsFile = join(wsSettingsDir, "settings.json");
+      let wsExistingSettings: Record<string, unknown> = {};
+      try {
+        wsExistingSettings = JSON.parse(readFileSync(wsSettingsFile, "utf-8"));
+      } catch { /* file doesn't exist or invalid JSON */ }
+      const wsRequiredPermissions = [
+        "mcp__lota__lota", "Bash(*)", "Read(*)", "Write(*)",
+        "Edit(*)", "Glob(*)", "Grep(*)", "Task(*)",
+        "WebFetch(*)", "WebSearch(*)"
+      ];
+      const wsCurrentAllow: string[] = (wsExistingSettings.permissions as { allow?: string[] })?.allow || [];
+      const wsMergedAllow = [...new Set([...wsCurrentAllow, ...wsRequiredPermissions])];
+      writeFileSync(wsSettingsFile, JSON.stringify({
+        ...wsExistingSettings,
         permissions: {
-          allow: [
-            "mcp__lota__lota", "Bash(*)", "Read(*)", "Write(*)",
-            "Edit(*)", "Glob(*)", "Grep(*)", "Task(*)",
-            "WebFetch(*)", "WebSearch(*)"
-          ]
-        }
+          ...(wsExistingSettings.permissions as object || {}),
+          allow: wsMergedAllow,
+        },
       }, null, 2) + "\n");
     } catch { /* workspace may be read-only */ }
 
@@ -770,9 +820,9 @@ async function main() {
   }
 
   // Main loop: poll → check → spawn → sleep
+  let emptyPolls = 0;
+  const MAX_INTERVAL_MULTIPLIER = 4; // max 4x base interval (60s with 15s base)
   while (!stopped) {
-    log("Checking for work...");
-
     let work: WorkData | null;
     try {
       work = await checkForWork(config);
@@ -784,19 +834,25 @@ async function main() {
     }
 
     if (!work) {
-      dim(`No pending work — skipped Claude spawn`);
-    } else {
-      const phase = work.phase;
+      emptyPolls++;
+      const multiplier = Math.min(emptyPolls, MAX_INTERVAL_MULTIPLIER);
+      const nextInterval = config.interval * multiplier;
+      if (emptyPolls === 1 || emptyPolls % 10 === 0) {
+        dim(`No pending work (${emptyPolls} checks) — next in ${nextInterval}s`);
+      }
+      if (config.once) break;
+      await sleep(nextInterval);
+      continue;
+    }
+
+    emptyPolls = 0; // reset on work found
+    const phase = work.phase;
       const taskCount = work.tasks.length;
       const commentCount = work.commentUpdates.length;
 
-      // ── AUTO MODE: skip plan phase, go straight to execute ──
-      if (config.mode === "auto") {
-        if (phase === "plan") {
-          // In auto mode, treat assigned tasks as ready to execute
-          work = { phase: "execute", tasks: work.tasks, commentUpdates: [] };
-        }
-      }
+      // Both modes now go through plan phase.
+      // Auto mode: plan → user approves via Lota Hub → execute
+      // Supervised mode: plan → user approves via Telegram → execute
 
       if (work.phase === "comments") {
         ok(`${commentCount} task(s) have new comments`);
@@ -809,7 +865,6 @@ async function main() {
           }
         }
       } else if (work.phase === "plan") {
-        // Only in supervised mode
         ok(`${taskCount} new task(s) — creating plans for approval`);
         for (const t of work.tasks) {
           dim(`  📋 #${t.id}: ${t.title}`);
@@ -834,6 +889,14 @@ async function main() {
 
       if (code === 0) {
         ok(`${work.phase} phase complete in ${elapsed}s`);
+
+        // AUTO: after plan phase, auto-approve and continue to execute
+        if (config.mode === "auto" && phase === "plan") {
+          for (const t of work.tasks) {
+            await lota("POST", `/tasks/${t.id}/status`, { status: "approved" });
+            ok(`Task #${t.id} auto-approved — will execute next cycle`);
+          }
+        }
 
         // SUPERVISED: after plan phase, wait for Telegram approval
         if (config.mode === "supervised" && phase === "plan") {
@@ -862,7 +925,6 @@ async function main() {
           await tgSend(config, `❌ Error: Claude exited with code ${code} after ${elapsed}s`);
         }
       }
-    }
 
     if (config.once) break;
 
