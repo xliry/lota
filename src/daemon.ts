@@ -3,6 +3,7 @@ import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { lota } from "./github.js";
+import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
 
 
 // ── Config ──────────────────────────────────────────────────────
@@ -128,112 +129,6 @@ Options:
   return { configPath, model, interval, once, mode, agentName, maxTasksPerCycle, githubToken, githubRepo, telegramBotToken, telegramChatId };
 }
 
-// ── Telegram API ────────────────────────────────────────────────
-
-async function tgApi(botToken: string, method: string, body?: Record<string, unknown>): Promise<unknown> {
-  const res = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json() as { ok: boolean; result?: unknown; description?: string };
-  if (!data.ok) throw new Error(`Telegram ${method}: ${data.description}`);
-  return data.result;
-}
-
-async function tgSend(config: AgentConfig, text: string, inlineKeyboard?: unknown[][]): Promise<unknown> {
-  if (!config.telegramBotToken || !config.telegramChatId) return null;
-  const body: Record<string, unknown> = {
-    chat_id: config.telegramChatId,
-    text,
-    parse_mode: "Markdown",
-  };
-  if (inlineKeyboard) {
-    body.reply_markup = { inline_keyboard: inlineKeyboard };
-  }
-  return tgApi(config.telegramBotToken, "sendMessage", body);
-}
-
-async function tgSetupChatId(config: AgentConfig): Promise<string> {
-  // Poll for /start message to discover chat_id
-  console.log("\n  Waiting for you to send /start to your Telegram bot...");
-  let lastUpdateId = 0;
-  for (let attempt = 0; attempt < 60; attempt++) { // 5 minutes max
-    const data = await tgApi(config.telegramBotToken, "getUpdates", {
-      offset: lastUpdateId + 1,
-      timeout: 5,
-    }) as Array<{ update_id: number; message?: { chat: { id: number }; text?: string } }>;
-
-    for (const update of data) {
-      lastUpdateId = update.update_id;
-      if (update.message?.text === "/start") {
-        const chatId = String(update.message.chat.id);
-        // Save to .mcp.json
-        if (config.configPath) {
-          const cfg = JSON.parse(readFileSync(config.configPath, "utf-8"));
-          if (cfg.mcpServers?.lota?.env) {
-            cfg.mcpServers.lota.env.TELEGRAM_CHAT_ID = chatId;
-            writeFileSync(config.configPath, JSON.stringify(cfg, null, 2) + "\n");
-          }
-        }
-        // Send confirmation
-        await tgApi(config.telegramBotToken, "sendMessage", {
-          chat_id: chatId,
-          text: "✅ Connected to Lota! You'll receive task notifications and approval requests here.",
-        });
-        return chatId;
-      }
-    }
-  }
-  throw new Error("Telegram setup timed out. Send /start to your bot and try again.");
-}
-
-async function tgWaitForApproval(config: AgentConfig, taskId: number, taskTitle: string): Promise<boolean> {
-  // Send approval request with inline buttons
-  await tgSend(config, `📋 *Plan ready for approval*\n\nTask #${taskId}: ${taskTitle}\n\nReview the plan and approve or reject:`, [
-    [
-      { text: "✅ Approve", callback_data: `approve_${taskId}` },
-      { text: "❌ Reject", callback_data: `reject_${taskId}` },
-    ],
-  ]);
-
-  // Poll for callback response (30 min timeout to prevent infinite hang)
-  const APPROVAL_TIMEOUT_MS = 30 * 60 * 1000;
-  const deadline = Date.now() + APPROVAL_TIMEOUT_MS;
-  let lastUpdateId = 0;
-  while (Date.now() < deadline) {
-    const data = await tgApi(config.telegramBotToken, "getUpdates", {
-      offset: lastUpdateId + 1,
-      timeout: 30, // long poll
-    }) as Array<{
-      update_id: number;
-      callback_query?: { id: string; data?: string; message?: { chat: { id: number } } };
-    }>;
-
-    for (const update of data) {
-      lastUpdateId = update.update_id;
-      const cb = update.callback_query;
-      if (!cb?.data) continue;
-
-      // Acknowledge the button press
-      await tgApi(config.telegramBotToken, "answerCallbackQuery", { callback_query_id: cb.id });
-
-      if (cb.data === `approve_${taskId}`) {
-        await tgSend(config, `🚀 Task #${taskId} approved! Executing now.`);
-        return true;
-      }
-      if (cb.data === `reject_${taskId}`) {
-        await tgSend(config, `⏸ Task #${taskId} rejected. Add a comment on GitHub with feedback.`);
-        return false;
-      }
-    }
-  }
-
-  // Timeout reached — reject by default
-  await tgSend(config, `⏸ Task #${taskId} approval timed out (30 min). Skipping.`);
-  return false;
-}
-
 // ── Logging (stdout + file) ──────────────────────────────────────
 
 const LOG_DIR = join(process.env.HOME || "~", ".lota", "lota");
@@ -357,7 +252,8 @@ async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
     return { phase: "execute", tasks: sorted.slice(0, config.maxTasksPerCycle), commentUpdates: [] };
   }
   if (assigned.length) {
-    return { phase: "plan", tasks: assigned, commentUpdates: [] };
+    const sorted = assigned.sort((a, b) => a.id - b.id);
+    return { phase: "plan", tasks: sorted.slice(0, config.maxTasksPerCycle), commentUpdates: [] };
   }
 
   return null; // nothing to do
@@ -572,46 +468,76 @@ function formatEvent(event: any) {
 
 function resolveWorkspace(work: WorkData): string {
   const rawWorkspace = work.tasks[0]?.workspace;
-  const home = process.env.HOME || "/root";
-  const taskWorkspace = rawWorkspace ? join(home, rawWorkspace) : null;
-  const resolvedWorkspace = rawWorkspace && existsSync(rawWorkspace) ? rawWorkspace
-    : taskWorkspace && existsSync(taskWorkspace) ? taskWorkspace
-    : null;
-  return resolvedWorkspace || process.cwd();
+  if (!rawWorkspace) return process.cwd();
+
+  const home = resolve(process.env.HOME || "/root");
+
+  // Reject absolute paths and path traversal attempts
+  if (rawWorkspace.startsWith("/") || rawWorkspace.includes("..")) {
+    err(`Workspace path rejected (unsafe): ${rawWorkspace}`);
+    return process.cwd();
+  }
+
+  const candidate = resolve(home, rawWorkspace);
+
+  // Ensure resolved path stays under home directory
+  if (!candidate.startsWith(home + "/")) {
+    err(`Workspace path rejected (escapes home): ${rawWorkspace}`);
+    return process.cwd();
+  }
+
+  if (existsSync(candidate)) return candidate;
+  return process.cwd();
 }
 
 // ── Build verification ──────────────────────────────────────────
 
-function verifyBuild(workspace: string): { success: boolean; output: string } {
+function verifyBuild(workspace: string): Promise<{ success: boolean; output: string }> {
   // Check if package.json has a build script
   const pkgPath = join(workspace, "package.json");
-  let buildCmd = "";
+  let hasBuildScript = false;
   if (existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      if (pkg.scripts?.build) {
-        buildCmd = "npm run build";
-      }
+      if (pkg.scripts?.build) hasBuildScript = true;
     } catch { /* invalid package.json */ }
   }
 
-  if (!buildCmd) {
-    return { success: true, output: "No build script found — skipped" };
+  if (!hasBuildScript) {
+    dim("No build script in package.json — verification skipped");
+    return Promise.resolve({ success: true, output: "No build script found — skipped" });
   }
 
-  try {
-    const output = execSync(buildCmd, {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn("npm", ["run", "build"], {
       cwd: workspace,
-      encoding: "utf-8",
-      timeout: 120_000, // 2 min
       stdio: ["ignore", "pipe", "pipe"],
     });
-    return { success: true, output: output.slice(-500) };
-  } catch (e) {
-    const err = e as { stderr?: string; stdout?: string; message?: string };
-    const output = (err.stderr || err.stdout || err.message || "Unknown build error").slice(-1000);
-    return { success: false, output };
-  }
+
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      resolve({ success: false, output: "Build timed out (2 min)" });
+    }, 120_000);
+
+    child.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+    child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ success: true, output: stdout.slice(-500) });
+      } else {
+        resolve({ success: false, output: (stderr || stdout || "Unknown build error").slice(-1000) });
+      }
+    });
+
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ success: false, output: e.message });
+    });
+  });
 }
 
 // ── Claude subprocess ───────────────────────────────────────────
@@ -863,7 +789,7 @@ async function main() {
     `  model:    ${config.model}`,
     `  config:   ${config.configPath}`,
     `  interval: ${config.interval}s`,
-    `  max-tasks: ${config.maxTasksPerCycle} per execute cycle`,
+    `  max-tasks: ${config.maxTasksPerCycle} per cycle`,
     `  log:      ${LOG_FILE}`,
     "",
   ];
@@ -956,7 +882,7 @@ async function main() {
         // Post-execution build verification
         if (work.phase === "execute") {
           const ws = resolveWorkspace(work);
-          const build = verifyBuild(ws);
+          const build = await verifyBuild(ws);
           if (build.success) {
             ok(`Build verification passed`);
           } else {
