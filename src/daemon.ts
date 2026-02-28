@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, createWriteStream } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, statSync, createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
 import { lota } from "./github.js";
@@ -147,15 +147,39 @@ Options:
 
 const LOG_DIR = join(process.env.HOME || "~", "lota");
 const LOG_FILE = join(LOG_DIR, "agent.log");
+const LOG_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+
 mkdirSync(LOG_DIR, { recursive: true });
-writeFileSync(LOG_FILE, ""); // clear on start
+
+function rotateLogs(): void {
+  if (existsSync(`${LOG_FILE}.1`)) renameSync(`${LOG_FILE}.1`, `${LOG_FILE}.2`);
+  if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > 0) renameSync(LOG_FILE, `${LOG_FILE}.1`);
+}
+
+rotateLogs();
 
 let logStream: WriteStream = createWriteStream(LOG_FILE, { flags: "a" });
 logStream.on("error", () => {}); // silently ignore log write errors
 
+function checkRotate(): void {
+  try {
+    if (existsSync(LOG_FILE) && statSync(LOG_FILE).size >= LOG_MAX_BYTES) {
+      logStream.end();
+      rotateLogs();
+      logStream = createWriteStream(LOG_FILE, { flags: "a" });
+      logStream.on("error", () => {});
+    }
+  } catch { /* ignore */ }
+}
+
 const time = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 
+// Write startup banner to mark new session
+const startupBanner = `\n${"=".repeat(60)}\n[SESSION START] ${new Date().toISOString()}\n${"=".repeat(60)}\n`;
+logStream.write(startupBanner);
+
 function out(msg: string, plain: string) {
+  checkRotate();
   console.log(msg);
   logStream.write(`${plain}\n`);
 }
