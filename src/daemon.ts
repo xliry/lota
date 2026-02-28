@@ -282,10 +282,8 @@ async function recoverStaleTasks(config: AgentConfig): Promise<void> {
         err(`Failed to recover task #${task.id}: ${(e as Error).message}`);
         continue;
       }
-      if (config.mode === "supervised") {
-        try { await tgSend(config, `🔄 Task #${task.id} auto-recovered after crash (retry ${nextRetry}/3): ${task.title}`); }
-        catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
-      }
+      try { await tgSend(config, `🔄 Task #${task.id} auto-recovered after crash (retry ${nextRetry}/3): ${task.title}`); }
+      catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
     } else {
       log(`❌ Task #${task.id} "${task.title}" — 3 crash recoveries exhausted, marking failed`);
       try {
@@ -297,10 +295,8 @@ async function recoverStaleTasks(config: AgentConfig): Promise<void> {
         err(`Failed to mark task #${task.id} as failed: ${(e as Error).message}`);
         continue;
       }
-      if (config.mode === "supervised") {
-        try { await tgSend(config, `❌ Task #${task.id} failed after 3 crash recoveries — manual review needed: ${task.title}`); }
-        catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
-      }
+      try { await tgSend(config, `❌ Task #${task.id} failed after 3 retries: ${task.title}`); }
+      catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
     }
   }
 

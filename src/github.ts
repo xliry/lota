@@ -380,6 +380,14 @@ const sync: Handler = async () => {
     comment_count: issue.comments ?? 0,
   }));
 
+  // Fetch failed tasks (terminal state, remain open for visibility)
+  const failedLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}failed`;
+  const failedIssues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(failedLabels)}&state=open`) as Array<GhIssue & { comments: number }>;
+  const failed = failedIssues.map(issue => ({
+    ...extractFromIssue(issue),
+    comment_count: issue.comments ?? 0,
+  }));
+
   // Fetch recently completed tasks (closed) so we can detect new comments on them
   const completedLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}completed`;
   const completedIssues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(completedLabels)}&state=closed&per_page=10&sort=updated&direction=desc`) as Array<GhIssue & { comments: number }>;
@@ -388,7 +396,7 @@ const sync: Handler = async () => {
     comment_count: issue.comments ?? 0,
   }));
 
-  return { assigned, approved, in_progress: inProgress, recently_completed: recentlyCompleted };
+  return { assigned, approved, in_progress: inProgress, failed, recently_completed: recentlyCompleted };
 };
 
 // ── Route table ─────────────────────────────────────────────

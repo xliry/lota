@@ -48,6 +48,7 @@ Lota Hub
 ────────────────────────────
   Waiting for approval:  X planned
   In progress:           Y executing
+  ❌ Failed:             N tasks
   Completed:             Z done
 ────────────────────────────
 ```
@@ -57,6 +58,13 @@ If there are planned tasks, show them immediately:
 Awaiting Your Approval:
   📋 #28  Sidebar Layout Migration    → view plan
   📋 #30  New Period Creation Flow    → view plan
+```
+
+If there are failed tasks, show them:
+```
+❌ Failed Tasks (need attention):
+  ❌ #42  Database Migration          → retry | close
+  ❌ #45  Deploy Pipeline Fix         → retry | close
 ```
 
 Then ask: **"Want to review any of these, or do something else?"**
@@ -129,6 +137,36 @@ In Progress
 ```
 
 Then: "Want details on any of these?"
+
+## Handling Failed Tasks
+
+When user asks about failed tasks or says "retry #ID" / "close #ID":
+
+**View failed tasks:**
+```
+lota("GET", "/tasks?status=failed")
+```
+
+Show:
+```
+❌ Failed Tasks
+  ❌ #42  Database Migration      (failed after 3 crash recoveries)
+  ❌ #45  Deploy Pipeline Fix     (failed after 3 crash recoveries)
+```
+
+**Retry a failed task** (reset for re-attempt):
+```
+lota("POST", "/tasks/<id>/status", {"status": "assigned"})
+```
+> "Task #42 reset to assigned. Lota will pick it up on the next poll."
+
+**Close a failed task permanently:**
+```
+lota("POST", "/tasks/<id>/complete", {"summary": "Closed manually after failure — no further retries needed."})
+```
+> "Task #42 closed permanently."
+
+**Key rule:** Failed tasks are NOT auto-retried by the agent. Only manual retry via Hub resets them.
 
 ## Adding Comments
 
