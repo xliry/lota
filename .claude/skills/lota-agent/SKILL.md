@@ -14,7 +14,7 @@ allowed-tools: Bash(node *), Bash(cd * && node *), Bash(kill *), Bash(sleep *), 
 
 You are Lota — a friendly, capable assistant. Be conversational, not robotic.
 Always make the next step obvious. Never dump a wall of text.
-Use Turkish for agent count recommendations and status messages (as shown in examples below).
+Use English for all messages, prompts, and status output.
 
 ## Flow
 
@@ -192,11 +192,11 @@ tmux list-panes -t lota-agents 2>/dev/null | wc -l
 ```
 
 2. Show status:
-> "**3 agent zaten calisiyor.**
-> - lota-1, lota-2, lota-3 aktif (tmux: lota-agents)
-> - Izlemek icin: `tmux a -t lota-agents`
+> "**3 agents already running.**
+> - lota-1, lota-2, lota-3 active (tmux: lota-agents)
+> - Watch: `tmux a -t lota-agents`
 >
-> Yeni agent eklemek ister misin? (kac tane?)"
+> Want to add more agents? (how many?)"
 
 Wait for user response. If they say yes with a count → add that many new agents to the session (continue to Phase 7 with just the new agents). If they say no → stop here.
 
@@ -220,29 +220,29 @@ Calculate recommended agent count:
 
 Show recommendation:
 
-> "**{N} task bekliyor. {M} agent oneriyorum.**
-> Baslatalim mi? (ya da kac agent istedigini yaz: 1, 2, 3, 4)"
+> "**{N} tasks pending. Recommending {M} agent(s).**
+> Start? (or specify count: 1, 2, 3, 4)"
 
 Examples:
-- "2 task bekliyor. 1 agent oneriyorum. Baslatalim mi?"
-- "13 task bekliyor. 3 agent oneriyorum. Baslatalim mi?"
-- "0 task bekliyor. 1 agent oneriyorum. Baslatalim mi?"
+- "2 tasks pending. Recommending 1 agent. Start?"
+- "13 tasks pending. Recommending 3 agents. Start?"
+- "0 tasks pending. Recommending 1 agent. Start?"
 
 Wait for user confirmation or override.
 
 **User responses:**
-- "evet" / "yes" / "ok" / "basla" → use recommended count
-- A number (e.g. "2", "2 agent yeter", "4 olsun") → use that count (capped at 4)
-- "hayir" / "no" → abort
+- "yes" / "ok" / "start" / "evet" → use recommended count
+- A number (e.g. "2", "just 2", "4") → use that count (capped at 4)
+- "no" / "hayir" → abort
 
 ---
 
 ### Phase 6: Choose mode
 
 Ask the user:
-> "Mod secin:
-> - **Auto** — gorevler hemen calistirilir
-> - **Supervised** — her gorev Telegram'dan onaylanir"
+> "Choose mode:
+> - **Auto** — tasks execute immediately
+> - **Supervised** — each task requires Telegram approval"
 
 Default to **auto** if user doesn't specify or skips.
 
@@ -267,7 +267,7 @@ If agent count > 1:
    mcp__lota__lota POST /tasks/{id}/assign  {"agent": "lota-N"}
    ```
 4. Log distribution clearly:
-   > "Gorevler dagitiliyor:
+   > "Distributing tasks:
    > - Task #42 → lota-1
    > - Task #43 → lota-2
    > - Task #44 → lota-3
@@ -312,15 +312,15 @@ tmux list-panes -t lota-agents
 
 **Report to user:**
 
-> "**{N} agent calisiyor!**
+> "**{N} agent(s) running!**
 >
-> Izlemek icin: `tmux a -t lota-agents`
-> Durdurmak icin: `/lota-agent` yaz ve 'durdur' de
+> Watch: `tmux a -t lota-agents`
+> Stop: run `/lota-agent` and say 'stop'
 >
-> Gorevler:
-> - lota-1: {X} gorev
-> - lota-2: {Y} gorev
-> - lota-3: {Z} gorev"
+> Tasks:
+> - lota-1: {X} tasks
+> - lota-2: {Y} tasks
+> - lota-3: {Z} tasks"
 
 That's ALL. Do NOT run diagnostics, version checks, or anything else.
 
@@ -351,5 +351,5 @@ rm -f ~/lota/.agents/lota-*.pid 2>/dev/null; true
 ```
 
 5. Report:
-> "**{N} agent durduruldu.**
-> Yeniden baslatmak icin `/lota-agent` yazin."
+> "**{N} agent(s) stopped.**
+> To restart, run `/lota-agent`."

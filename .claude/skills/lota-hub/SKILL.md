@@ -124,17 +124,20 @@ User says something like "sidebar'ı değiştirmesi lazım"
 You respond:
 > "Got it — I'll create a task to migrate the navbar to a sidebar. Assign to Lota, high priority?"
 
-User confirms → you create it:
+User confirms → you create it.
+
+**Before creating, discover alive agents** (see Agent Discovery section). Then assign to the agent with the fewest pending tasks (round-robin for equal loads):
 ```
-lota("POST", "/tasks", {"title": "...", "assign": "lota", "priority": "high", "body": "..."})
+lota("POST", "/tasks", {"title": "...", "assign": "<agent-name>", "priority": "high", "body": "..."})
 ```
 
 Then:
-> "Created task #42. Lota will create a plan first, then you can approve it. What's next?"
+> "Created task #42, assigned to lota-1. What's next?"
 
 **Key principles:**
 - Extract title and description from natural conversation
-- Suggest sensible defaults (assign: lota, priority: medium)
+- Discover alive agents first, assign to least-loaded agent
+- If no agents running (no PID files), default to `assign: "lota"`
 - Only ask for clarification if genuinely ambiguous
 - Keep the body detailed but the title short
 
