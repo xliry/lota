@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, createWriteStream } from "node:fs";
+import type { WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
 import { lota } from "./github.js";
 import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
@@ -149,11 +150,14 @@ const LOG_FILE = join(LOG_DIR, "agent.log");
 mkdirSync(LOG_DIR, { recursive: true });
 writeFileSync(LOG_FILE, ""); // clear on start
 
+let logStream: WriteStream = createWriteStream(LOG_FILE, { flags: "a" });
+logStream.on("error", () => {}); // silently ignore log write errors
+
 const time = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 
 function out(msg: string, plain: string) {
   console.log(msg);
-  appendFileSync(LOG_FILE, `${plain}\n`);
+  logStream.write(`${plain}\n`);
 }
 
 const PRE = "\x1b[36m[lota]\x1b[0m";
@@ -499,7 +503,7 @@ function formatEvent(event: any) {
     const plain = `[${t}] ${icon} ${msg}`;
     const colored = `${PRE} \x1b[90m${t}\x1b[0m ${icon} ${msg}`;
     console.log(colored);
-    appendFileSync(LOG_FILE, `${plain}\n`);
+    logStream.write(`${plain}\n`);
   };
 
   // Tool use (agent calling a tool)
@@ -824,7 +828,7 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
         } catch {
           // Not JSON, log raw
           console.log(`  ${line}`);
-          appendFileSync(LOG_FILE, `  ${line}\n`);
+          logStream.write(`  ${line}\n`);
         }
       }
     });
@@ -833,7 +837,7 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       const text = d.toString();
       for (const line of text.split("\n")) {
         if (line.trim()) {
-          appendFileSync(LOG_FILE, `  [stderr] ${line}\n`);
+          logStream.write(`  [stderr] ${line}\n`);
         }
       }
     });
@@ -870,6 +874,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     if (stopped) {
       if (currentProcess) currentProcess.kill("SIGKILL");
+      logStream.end();
       process.exit(0);
     }
     stopped = true;
@@ -878,6 +883,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
       currentProcess.kill("SIGTERM");
       setTimeout(() => {
         if (currentProcess) currentProcess.kill("SIGKILL");
+        logStream.end();
         process.exit(0);
       }, 5000);
     }
@@ -929,7 +935,7 @@ async function main() {
   ];
   for (const line of banner) {
     console.log(line);
-    appendFileSync(LOG_FILE, `${line}\n`);
+    logStream.write(`${line}\n`);
   }
 
   log("━━━ Agent active, waiting for tasks ━━━");
