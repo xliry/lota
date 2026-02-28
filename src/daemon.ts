@@ -158,6 +158,10 @@ interface TaskInfo {
   body?: string;
   workspace?: string;
   comment_count?: number;
+  plan?: {
+    affected_files?: string[];
+    goals?: string[];
+  };
 }
 
 interface CommentUpdate {
@@ -249,7 +253,19 @@ async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
   }
   if (approved.length) {
     const sorted = approved.sort((a, b) => a.id - b.id);
-    return { phase: "execute", tasks: sorted.slice(0, config.maxTasksPerCycle), commentUpdates: [] };
+    const tasksToExecute = sorted.slice(0, config.maxTasksPerCycle);
+    // Fetch full details to include plan context (affected_files, goals) in the execute prompt
+    const enrichedTasks = await Promise.all(
+      tasksToExecute.map(async (t) => {
+        try {
+          const details = await lota("GET", `/tasks/${t.id}`) as { plan?: { affected_files?: string[]; goals?: string[] } };
+          return { ...t, plan: details.plan };
+        } catch {
+          return t;
+        }
+      })
+    );
+    return { phase: "execute", tasks: enrichedTasks, commentUpdates: [] };
   }
   if (assigned.length) {
     const sorted = assigned.sort((a, b) => a.id - b.id);
@@ -369,6 +385,23 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
       }
       if (t.body) {
         lines.push("", "  ── TASK BODY ──", t.body, "  ── END BODY ──");
+      }
+      if (t.plan?.goals?.length) {
+        lines.push("", "  ── GOALS FROM PLAN ──");
+        for (const g of t.plan.goals) {
+          lines.push(`    - ${g}`);
+        }
+        lines.push("  ── END GOALS ──");
+      }
+      if (t.plan?.affected_files?.length) {
+        lines.push("", "  ── FILES FROM PLAN ──");
+        lines.push("  You already explored these files during planning. Start implementing directly.");
+        lines.push("  Only re-read a file if it may have changed since planning (e.g. a git pull happened).");
+        lines.push("  Do NOT spawn Explore subagents to re-discover what is already listed here.");
+        for (const f of t.plan.affected_files) {
+          lines.push(`    - ${f}`);
+        }
+        lines.push("  ── END FILES FROM PLAN ──");
       }
     }
     lines.push(
