@@ -3,7 +3,7 @@ import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, statSync, createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
-import { lota } from "./github.js";
+import { lota, getRateLimitInfo } from "./github.js";
 import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
 
 
@@ -973,8 +973,10 @@ async function main() {
 
   // Main loop: poll → check → spawn → sleep
   let emptyPolls = 0;
+  let pollCycles = 0;
   const MAX_INTERVAL_MULTIPLIER = 4; // max 4x base interval (60s with 15s base)
   while (!stopped) {
+    pollCycles++;
     let work: WorkData | null;
     try {
       work = await checkForWork(config);
@@ -1118,6 +1120,15 @@ async function main() {
       }
 
     if (config.once) break;
+
+    // Log rate limit status every 10 cycles
+    if (pollCycles % 10 === 0) {
+      const rl = getRateLimitInfo();
+      if (rl) {
+        const resetIn = Math.max(0, Math.round((rl.reset * 1000 - Date.now()) / 60000));
+        dim(`Rate limit: ${rl.remaining}/${rl.limit} remaining (resets in ${resetIn}m)`);
+      }
+    }
 
     dim(`Polling in ${config.interval}s...`);
     await sleep(config.interval);

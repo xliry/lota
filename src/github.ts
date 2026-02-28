@@ -43,7 +43,47 @@ export interface LotaError {
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 
+// ── Rate limit tracking ──────────────────────────────────────
+
+interface RateLimitInfo {
+  remaining: number;
+  limit: number;
+  reset: number; // Unix timestamp (seconds)
+  updatedAt: number; // Date.now()
+}
+
+let rateLimitInfo: RateLimitInfo | null = null;
+
+export function getRateLimitInfo(): RateLimitInfo | null {
+  return rateLimitInfo;
+}
+
+function updateRateLimit(headers: Headers): void {
+  const remaining = parseInt(headers.get("x-ratelimit-remaining") || "", 10);
+  const limit = parseInt(headers.get("x-ratelimit-limit") || "", 10);
+  const reset = parseInt(headers.get("x-ratelimit-reset") || "", 10);
+  if (isNaN(remaining) || isNaN(limit) || isNaN(reset)) return;
+
+  rateLimitInfo = { remaining, limit, reset, updatedAt: Date.now() };
+
+  const resetIn = Math.max(0, Math.round((reset * 1000 - Date.now()) / 60000));
+  if (remaining < 20) {
+    console.warn(`\u26a0\ufe0f  GitHub rate limit CRITICAL: ${remaining}/${limit} remaining (resets in ${resetIn}m)`);
+  } else if (remaining < 100) {
+    console.warn(`\u26a0\ufe0f  GitHub rate limit low: ${remaining}/${limit} remaining (resets in ${resetIn}m)`);
+  }
+}
+
 async function gh(path: string, opts: RequestInit = {}): Promise<unknown> {
+  // Auto backoff when rate limit is critically low
+  if (rateLimitInfo && rateLimitInfo.remaining < 20) {
+    const waitUntil = rateLimitInfo.reset * 1000;
+    const waitMs = Math.max(0, waitUntil - Date.now()) + 5000; // 5s buffer
+    const waitMin = Math.round(waitMs / 60000);
+    console.warn(`\u26a0\ufe0f  Rate limit critical (${rateLimitInfo.remaining} left) — backing off ${waitMin}m`);
+    await new Promise(r => setTimeout(r, Math.min(waitMs, 5 * 60 * 1000))); // cap at 5m
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -58,6 +98,9 @@ async function gh(path: string, opts: RequestInit = {}): Promise<unknown> {
           ...(opts.headers as Record<string, string> || {}),
         },
       });
+
+      // Always update rate limit from response headers
+      updateRateLimit(res.headers);
 
       // Rate limit — retry with backoff
       if (res.status === 403 || res.status === 429) {
