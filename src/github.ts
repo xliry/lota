@@ -277,18 +277,78 @@ const completeTask: Handler = async (params, _query, body) => {
   const { summary, modified_files, new_files } = body as {
     summary: string; modified_files?: string[]; new_files?: string[];
   };
+  const numId = Number(id);
+  const result = {
+    ok: false,
+    commentPosted: false,
+    labelSwapped: false,
+    issueClosed: false,
+    errors: [] as string[],
+  };
+
+  // Step 1: Post completion report comment
   const humanText = `## Completion Report\n${summary}${modified_files?.length ? `\n\nModified: ${modified_files.join(", ")}` : ""}${new_files?.length ? `\nNew: ${new_files.join(", ")}` : ""}`;
   const comment = formatMetadata("report", { summary, modified_files, new_files }, humanText);
-  await gh(`/repos/${repo()}/issues/${id}/comments`, {
-    method: "POST",
-    body: JSON.stringify({ body: comment }),
-  });
-  await swapLabels(Number(id), LABEL.STATUS, `${LABEL.STATUS}completed`);
-  await gh(`/repos/${repo()}/issues/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ state: "closed" }),
-  });
-  return { ok: true, completed: true };
+  try {
+    await gh(`/repos/${repo()}/issues/${id}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body: comment }),
+    });
+    result.commentPosted = true;
+  } catch (err) {
+    const msg = `[task #${id}] Step 1 (post comment) failed: ${(err as Error).message}`;
+    result.errors.push(msg);
+    console.error(msg);
+    return result;
+  }
+
+  // Step 2: Swap status label to completed (retry once on failure)
+  try {
+    await swapLabels(numId, LABEL.STATUS, `${LABEL.STATUS}completed`);
+    result.labelSwapped = true;
+  } catch (err) {
+    try {
+      await swapLabels(numId, LABEL.STATUS, `${LABEL.STATUS}completed`);
+      result.labelSwapped = true;
+    } catch (retryErr) {
+      const msg = `[task #${id}] Step 2 (label swap to completed) failed after retry: ${(retryErr as Error).message}`;
+      result.errors.push(msg);
+      console.error(msg);
+      return result;
+    }
+  }
+
+  // Step 3: Close the issue (retry once on failure)
+  try {
+    await gh(`/repos/${repo()}/issues/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ state: "closed" }),
+    });
+    result.issueClosed = true;
+  } catch (err) {
+    try {
+      await gh(`/repos/${repo()}/issues/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ state: "closed" }),
+      });
+      result.issueClosed = true;
+    } catch (retryErr) {
+      const msg = `[task #${id}] Step 3 (close issue) failed after retry: ${(retryErr as Error).message}. Reverting label to avoid completed+open inconsistency.`;
+      result.errors.push(msg);
+      console.error(msg);
+      // Revert label to in-progress to keep state consistent (open + in-progress)
+      try {
+        await swapLabels(numId, LABEL.STATUS, `${LABEL.STATUS}in-progress`);
+      } catch (revertErr) {
+        const revertMsg = `[task #${id}] Failed to revert label after close failure: ${(revertErr as Error).message}`;
+        result.errors.push(revertMsg);
+        console.error(revertMsg);
+      }
+      return result;
+    }
+  }
+
+  return { ...result, ok: true };
 };
 
 const addComment: Handler = async (params, _query, body) => {
