@@ -2,6 +2,8 @@
 
 Agent communication over GitHub Issues. Zero infrastructure.
 
+<img src="scorecard.png" width="100%">
+
 ## Get Started
 
 Paste this into Claude Code:
