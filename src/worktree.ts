@@ -90,6 +90,17 @@ export function createWorktree(
  * then push to origin.
  */
 export function mergeWorktree(workspace: string, branch: string): MergeResult {
+  // Stash any uncommitted changes in the workspace before merging
+  let didStash = false;
+  try {
+    const stashOut = execSync("git stash", {
+      cwd: workspace,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+    didStash = !stashOut.includes("No local changes");
+  } catch { /* ignore — stash may fail if nothing to stash */ }
+
   try {
     const output = execSync(`git merge "${branch}" --no-edit`, {
       cwd: workspace,
@@ -101,12 +112,16 @@ export function mergeWorktree(workspace: string, branch: string): MergeResult {
     try {
       execSync("git push origin HEAD", { cwd: workspace, stdio: "pipe" });
     } catch (pushErr) {
+      if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
       return {
         success: false,
         hasConflicts: false,
         output: `Merge succeeded but push failed: ${(pushErr as Error).message}`,
       };
     }
+
+    // Restore stashed changes after successful merge+push
+    if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
 
     return { success: true, hasConflicts: false, output: String(output) };
   } catch (e) {
@@ -117,6 +132,8 @@ export function mergeWorktree(workspace: string, branch: string): MergeResult {
         execSync("git merge --abort", { cwd: workspace, stdio: "pipe" });
       } catch { /* ignore */ }
     }
+    // Restore stashed changes even on failure
+    if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
     return { success: false, hasConflicts, output: msg };
   }
 }
