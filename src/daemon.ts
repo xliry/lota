@@ -4,6 +4,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, statSyn
 import type { WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
 import { lota, getRateLimitInfo } from "./github.js";
+import { createWorktree, mergeWorktree, cleanupWorktree, cleanStaleWorktrees, type WorktreeInfo } from "./worktree.js";
 import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
 
 
@@ -346,9 +347,9 @@ async function recoverStaleTasks(config: AgentConfig): Promise<void> {
       }
     }
 
-    let details: { comments?: Array<{ body: string }> };
+    let details: { comments?: Array<{ body: string }>; workspace?: string };
     try {
-      details = await lota("GET", `/tasks/${task.id}`) as { comments?: Array<{ body: string }> };
+      details = await lota("GET", `/tasks/${task.id}`) as { comments?: Array<{ body: string }>; workspace?: string };
     } catch (e) {
       err(`Failed to fetch details for task #${task.id}: ${(e as Error).message}`);
       continue;
@@ -388,6 +389,20 @@ async function recoverStaleTasks(config: AgentConfig): Promise<void> {
       }
       try { await tgSend(config, `❌ Task #${task.id} failed after 3 retries: ${task.title}`); }
       catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
+    }
+
+    // Clean up stale worktrees for this task's workspace
+    if (details.workspace) {
+      const home = resolve(process.env.HOME || "/root");
+      const wsPath = details.workspace.startsWith("~/")
+        ? join(home, details.workspace.slice(2))
+        : details.workspace;
+      if (existsSync(wsPath)) {
+        try {
+          cleanStaleWorktrees(wsPath);
+          dim(`  Cleaned stale worktrees for workspace: ${wsPath}`);
+        } catch { /* ignore */ }
+      }
     }
   }
 
@@ -1037,7 +1052,7 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
     } catch (e) { dim(`[non-critical] failed to write Claude settings to ${claudeSettingsFile}: ${(e as Error).message}`); }
 
     const isRoot = process.getuid?.() === 0;
-    const args = [
+    const args: string[] = [
       "--print",
       "--verbose",
       "--output-format", "stream-json",
@@ -1046,7 +1061,6 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       ...(isRoot ? [] : ["--dangerously-skip-permissions"]),
       "--model", config.model,
       ...(config.configPath ? ["--mcp-config", config.configPath] : []),
-      "-p", buildPrompt(config.agentName, work, config),
     ];
 
     // Use workspace from first task as cwd if available
@@ -1060,10 +1074,33 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       }
     }
 
-    // Also merge .claude/settings.json into the workspace cwd
+    // Create git worktree for isolation (execute/single phases only)
+    let claudeCwd = workingDir;
+    let worktreeInfo: WorktreeInfo | null = null;
+    if ((work.phase === "execute" || work.phase === "single") && work.tasks[0]?.id) {
+      worktreeInfo = createWorktree(workingDir, config.agentName, work.tasks[0].id);
+      if (worktreeInfo) {
+        claudeCwd = worktreeInfo.worktreePath;
+        ok(`Worktree: ${claudeCwd} (branch: ${worktreeInfo.branch})`);
+      } else {
+        dim(`Worktree skipped (not a git repo or failed): ${workingDir}`);
+      }
+    }
+
+    // Build prompt — point agent to worktree path if isolation is active
+    const promptWork: WorkData = worktreeInfo ? {
+      ...work,
+      tasks: work.tasks.map(t => ({
+        ...t,
+        workspace: t.workspace ? worktreeInfo!.worktreePath : t.workspace,
+      })),
+    } : work;
+    args.push("-p", buildPrompt(config.agentName, promptWork, config));
+
+    // Also merge .claude/settings.json into the workspace cwd (or worktree)
     // Claude Code reads project-level settings which can override global ones
     try {
-      const wsSettingsDir = join(workingDir, ".claude");
+      const wsSettingsDir = join(claudeCwd, ".claude");
       mkdirSync(wsSettingsDir, { recursive: true });
       const wsSettingsFile = join(wsSettingsDir, "settings.json");
       let wsExistingSettings: Record<string, unknown> = {};
@@ -1088,7 +1125,7 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
 
     const child = spawn("claude", args, {
       stdio: ["ignore", "pipe", "pipe"],
-      cwd: workingDir,
+      cwd: claudeCwd,
       env: cleanEnv,
     });
 
@@ -1116,6 +1153,13 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
         lota("POST", `/tasks/${taskId}/comment`, {
           content: `⚠️ **Agent timeout**: Claude subprocess was killed after ${config.timeout}s without completing. The task will be retried on the next cycle.`,
         }).catch(() => { /* best-effort */ });
+      }
+
+      // Clean up worktree on timeout
+      if (worktreeInfo) {
+        try {
+          cleanupWorktree(worktreeInfo.originalWorkspace, config.agentName, worktreeInfo.branch);
+        } catch { /* ignore */ }
       }
 
       currentProcess = null;
@@ -1158,6 +1202,34 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       clearTimeout(killTimer);
       currentProcess = null;
       busy = false;
+
+      // Handle worktree: merge back to main or clean up
+      if (worktreeInfo) {
+        if (code === 0) {
+          log(`Merging branch ${worktreeInfo.branch} back to main...`);
+          const mergeResult = mergeWorktree(worktreeInfo.originalWorkspace, worktreeInfo.branch);
+          if (mergeResult.success) {
+            ok(`Merged ${worktreeInfo.branch} → main`);
+            cleanupWorktree(worktreeInfo.originalWorkspace, config.agentName, worktreeInfo.branch);
+          } else if (mergeResult.hasConflicts) {
+            err(`Merge conflict on ${worktreeInfo.branch} — manual review needed`);
+            err(mergeResult.output.slice(0, 200));
+            for (const t of work.tasks) {
+              lota("POST", `/tasks/${t.id}/comment`, {
+                content: `⚠️ **Merge conflict**: Agent completed work on branch \`${worktreeInfo.branch}\` but auto-merge to main failed due to conflicts. Manual review needed.\n\nWorktree preserved at: \`${worktreeInfo.worktreePath}\``,
+              }).catch(() => { /* best-effort */ });
+            }
+            // Leave worktree intact for manual resolution
+          } else {
+            err(`Merge/push failed: ${mergeResult.output.slice(0, 200)}`);
+            cleanupWorktree(worktreeInfo.originalWorkspace, config.agentName, worktreeInfo.branch);
+          }
+        } else {
+          // Task failed — clean up worktree
+          cleanupWorktree(worktreeInfo.originalWorkspace, config.agentName, worktreeInfo.branch);
+        }
+      }
+
       resolve(code ?? 1);
     });
 
