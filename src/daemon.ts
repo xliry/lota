@@ -702,11 +702,12 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
     cleanEnv.GITHUB_REPO = config.githubRepo;
     cleanEnv.AGENT_NAME = config.agentName;
 
-    // Configure git identity
-    try {
-      execSync(`git config --global user.name "${config.agentName}"`, { stdio: "ignore" });
-      execSync(`git config --global user.email "${config.githubRepo.split("/")[0]}@users.noreply.github.com"`, { stdio: "ignore" });
-    } catch { /* git config may fail in some environments */ }
+    // Set git identity via env vars (scoped to subprocess only — never touches ~/.gitconfig)
+    const agentEmail = `${config.githubRepo.split("/")[0]}@users.noreply.github.com`;
+    cleanEnv.GIT_AUTHOR_NAME = config.agentName;
+    cleanEnv.GIT_AUTHOR_EMAIL = agentEmail;
+    cleanEnv.GIT_COMMITTER_NAME = config.agentName;
+    cleanEnv.GIT_COMMITTER_EMAIL = agentEmail;
 
     // Write token to a file so agent's Bash tool can read it
     // (Claude Code may sandbox env vars from Bash commands)
