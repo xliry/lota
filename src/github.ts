@@ -361,6 +361,13 @@ const addComment: Handler = async (params, _query, body) => {
   });
 };
 
+const assignTask: Handler = async (params, _query, body) => {
+  const { id } = params;
+  const { agent: newAgent } = body as { agent: string };
+  await swapLabels(Number(id), LABEL.AGENT, `${LABEL.AGENT}${newAgent}`);
+  return { ok: true, agent: newAgent };
+};
+
 const sync: Handler = async () => {
   // Fetch assigned tasks (need planning)
   const assignedLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}assigned`;
@@ -409,6 +416,7 @@ const routes: Route[] = [
   route("POST", "/tasks/:id/status",   updateStatus),
   route("POST", "/tasks/:id/complete", completeTask),
   route("POST", "/tasks/:id/comment",  addComment),
+  route("POST", "/tasks/:id/assign",   assignTask),
   route("GET",  "/sync",               sync),
 ];
 

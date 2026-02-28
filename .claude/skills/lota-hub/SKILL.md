@@ -95,6 +95,22 @@ lota("POST", "/tasks/<id>/comment", {"content": "..."})
 - Show a quick summary of all planned tasks
 - Confirm once, then approve all in sequence
 
+## Agent Discovery
+
+Before creating multiple tasks, check which agents are alive:
+
+```bash
+for f in ~/lota/.agents/*.pid; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f" .pid)
+  pid=$(node -e "const d=JSON.parse(require('fs').readFileSync('$f','utf8'));process.stdout.write(String(d.pid))" 2>/dev/null)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$name"
+done
+```
+
+- If the `.agents/` directory doesn't exist or no PIDs are alive → default agent list is `["lota"]` (backwards compatible)
+- Result: a list like `["lota-1", "lota-2", "lota-3"]`
+
 ## Creating Tasks — The Conversational Way
 
 **DON'T do this:**
@@ -121,6 +137,59 @@ Then:
 - Suggest sensible defaults (assign: lota, priority: medium)
 - Only ask for clarification if genuinely ambiguous
 - Keep the body detailed but the title short
+
+## Creating Multiple Tasks (Round-Robin Distribution)
+
+When the user asks to create **multiple tasks at once** (e.g., "13 task oluştur", "create 5 tasks"):
+
+1. **Discover alive agents** (see Agent Discovery section above)
+2. **Distribute round-robin**: assign task `i` to `agents[i % agents.length]`
+3. **Show distribution before creating** (confirm once if count > 5):
+   ```
+   Creating 9 tasks across 3 agents:
+     lota-1 → 3 tasks
+     lota-2 → 3 tasks
+     lota-3 → 3 tasks
+   ```
+4. **Create each task** with `assign` set to the appropriate agent:
+   ```
+   lota("POST", "/tasks", {"title": "...", "assign": "lota-1", "priority": "medium", "body": "..."})
+   lota("POST", "/tasks", {"title": "...", "assign": "lota-2", "priority": "medium", "body": "..."})
+   ...
+   ```
+5. **After all created**, show the summary:
+   ```
+   ✅ Created 9 tasks:
+     4 tasks → lota-1 (#28, #29, #32, #35)
+     3 tasks → lota-2 (#30, #33, #36)
+     2 tasks → lota-3 (#31, #34)
+   ```
+
+If only 1 agent alive, all tasks go to that agent (no distribution needed).
+
+## Rebalance Tasks
+
+When user says **"rebalance"** or **"yeniden dağıt"** (or similar):
+
+1. **Discover alive agents**
+2. If only 1 agent alive: `"Only 1 agent alive — no rebalancing needed."`
+3. **Fetch all pending tasks** (assigned + approved):
+   ```
+   lota("GET", "/tasks?status=assigned")
+   lota("GET", "/tasks?status=approved")
+   ```
+4. **Redistribute round-robin** — reassign each task to the next agent in sequence:
+   ```
+   lota("POST", "/tasks/<id>/assign", {"agent": "lota-2"})
+   ```
+5. **Show changes**:
+   ```
+   Rebalanced 12 tasks across 3 agents:
+     #28 → lota-1  (was: lota)
+     #29 → lota-2  (was: lota)
+     #30 → lota-3  (was: lota)
+     ...
+   ```
 
 ## Checking Tasks
 
