@@ -16,6 +16,7 @@ interface AgentConfig {
   interval: number;
   once: boolean;
   mode: AgentMode;
+  singlePhase: boolean;
   agentName: string;
   maxTasksPerCycle: number;
   githubToken: string;
@@ -32,6 +33,7 @@ function parseArgs(): AgentConfig {
   let model = "sonnet";
   let mode: AgentMode = "auto";
   let maxTasksPerCycle = 1;
+  let singlePhaseOverride: boolean | null = null;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -41,6 +43,8 @@ function parseArgs(): AgentConfig {
       case "--model": case "-m": model = args[++i]; break;
       case "--mode": mode = args[++i] as AgentMode; break;
       case "--max-tasks": case "-t": maxTasksPerCycle = Math.max(1, parseInt(args[++i], 10)); break;
+      case "--single-phase": singlePhaseOverride = true; break;
+      case "--no-single-phase": singlePhaseOverride = false; break;
       case "--help": case "-h":
         console.log(`Usage: lota-agent [options]
 
@@ -53,11 +57,16 @@ Options:
   -i, --interval <sec>  Poll interval in seconds (default: 15)
   -t, --max-tasks <n>   Max tasks per execute cycle (default: 1)
   --mode <auto|supervised>  auto = direct execution, supervised = Telegram approval (default: auto)
+  --single-phase        Merge plan+execute into one Claude invocation (default: on in auto mode)
+  --no-single-phase     Use separate plan→approve→execute phases even in auto mode
   -1, --once            Run once then exit
   -h, --help            Show this help`);
         process.exit(0);
     }
   }
+
+  // Default: single-phase is enabled in auto mode, disabled in supervised mode
+  const singlePhase = singlePhaseOverride !== null ? singlePhaseOverride : mode === "auto";
 
   // Find .mcp.json — search upward from cwd, then $HOME
   function findMcpConfig(): string {
@@ -126,7 +135,7 @@ Options:
     process.exit(1);
   }
 
-  return { configPath, model, interval, once, mode, agentName, maxTasksPerCycle, githubToken, githubRepo, telegramBotToken, telegramChatId };
+  return { configPath, model, interval, once, mode, singlePhase, agentName, maxTasksPerCycle, githubToken, githubRepo, telegramBotToken, telegramChatId };
 }
 
 // ── Logging (stdout + file) ──────────────────────────────────────
@@ -172,7 +181,7 @@ interface CommentUpdate {
 }
 
 interface WorkData {
-  phase: "plan" | "execute" | "comments";
+  phase: "plan" | "execute" | "comments" | "single";
   tasks: TaskInfo[];
   commentUpdates: CommentUpdate[];
 }
@@ -269,7 +278,8 @@ async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
   }
   if (assigned.length) {
     const sorted = assigned.sort((a, b) => a.id - b.id);
-    return { phase: "plan", tasks: sorted.slice(0, config.maxTasksPerCycle), commentUpdates: [] };
+    const phase = config.singlePhase ? "single" : "plan";
+    return { phase, tasks: sorted.slice(0, config.maxTasksPerCycle), commentUpdates: [] };
   }
 
   return null; // nothing to do
@@ -341,6 +351,37 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
       "  - If the user is giving feedback → adjust your work accordingly",
       "  - If the user is asking a question → reply with a comment",
       "  - If the user is changing requirements → update your approach",
+    );
+  }
+
+  // ── PHASE: SINGLE (auto mode — explore, plan, execute in one shot) ──
+  if (work.phase === "single" && work.tasks.length) {
+    lines.push("", "── SINGLE PHASE — Explore, plan, then execute immediately ──");
+    lines.push("  You are in auto mode. Explore the codebase, post a plan comment, then immediately execute without waiting for approval.");
+    lines.push("");
+    for (const t of work.tasks) {
+      lines.push(`  Task #${t.id}: ${t.title || "(untitled)"}`);
+      if (t.workspace) {
+        lines.push(`  Workspace: ${t.workspace} (project is here — DO NOT clone)`);
+      }
+      if (t.body) {
+        lines.push("", "  ── TASK BODY ──", t.body, "  ── END BODY ──");
+      }
+    }
+    lines.push(
+      "",
+      "  IMPORTANT: You are working on exactly ONE task this cycle. Make exactly ONE focused commit.",
+      "  Commit message MUST reference the task: e.g., \"feat: add X (#42)\"",
+      "  Do NOT batch changes from other tasks.",
+      "",
+      "  WORKFLOW for each task:",
+      `    1. Read full details: lota("GET", "/tasks/<id>")`,
+      `    2. Set status to in-progress: lota("POST", "/tasks/<id>/status", {"status": "in-progress"})`,
+      "    3. Explore the codebase to understand what's needed (use Explore subagents)",
+      `    4. Post plan as comment (for audit trail): lota("POST", "/tasks/<id>/comment", {"content": "## Plan\\n- Goal 1\\n- Goal 2\\n..."})`,
+      "    5. Execute the work immediately — do NOT stop and wait for approval",
+      "    6. BEFORE pushing: run `npm run build` (NOT `npx tsc --noEmit` alone). If build fails, fix ALL errors before committing. Never push broken code.",
+      `    7. Complete: lota("POST", "/tasks/<id>/complete", {"summary": "...", "modified_files": [], "new_files": []})`,
     );
   }
 
@@ -821,7 +862,9 @@ async function main() {
     }
   }
 
-  const modeLabel = config.mode === "supervised" ? "supervised (Telegram)" : "autonomous";
+  const modeLabel = config.mode === "supervised"
+    ? "supervised (Telegram)"
+    : config.singlePhase ? "autonomous (single-phase)" : "autonomous";
   const banner = [
     "",
     "  ┌─────────────────────────┐",
@@ -895,6 +938,11 @@ async function main() {
             catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
           }
         }
+      } else if (work.phase === "single") {
+        ok(`${taskCount} new task(s) — single-phase (explore+execute)`);
+        for (const t of work.tasks) {
+          dim(`  ⚡ #${t.id}: ${t.title}`);
+        }
       } else if (work.phase === "plan") {
         ok(`${taskCount} new task(s) — creating plans for approval`);
         for (const t of work.tasks) {
@@ -923,7 +971,7 @@ async function main() {
         ok(`${work.phase} phase complete in ${elapsed}s`);
 
         // Post-execution build verification
-        if (work.phase === "execute") {
+        if (work.phase === "execute" || work.phase === "single") {
           const ws = resolveWorkspace(work);
           const build = await verifyBuild(ws);
           if (build.success) {
@@ -942,7 +990,7 @@ async function main() {
           }
         }
 
-        // AUTO: after plan phase, auto-approve and continue to execute
+        // AUTO: after plan phase (when --no-single-phase is set), auto-approve and continue to execute
         if (config.mode === "auto" && phase === "plan") {
           for (const t of work.tasks) {
             await lota("POST", `/tasks/${t.id}/status`, { status: "approved" });
@@ -966,7 +1014,7 @@ async function main() {
         }
 
         // Notify completion
-        if (config.mode === "supervised" && work.phase === "execute") {
+        if (config.mode === "supervised" && (work.phase === "execute" || work.phase === "single")) {
           for (const t of work.tasks) {
             try { await tgSend(config, `✅ Task #${t.id} completed: ${t.title}`); }
             catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
