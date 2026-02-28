@@ -285,6 +285,18 @@ async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
   return null; // nothing to do
 }
 
+// After a Claude cycle, re-fetch comment counts for all processed tasks so the
+// agent's own post-execution comments don't trigger a spurious "comments" phase.
+async function refreshCommentBaselines(taskIds: number[]): Promise<void> {
+  for (const id of taskIds) {
+    try {
+      const task = await lota("GET", `/tasks/${id}`) as { comments?: unknown[] };
+      const count = task.comments?.length ?? 0;
+      lastSeenComments.set(id, count);
+    } catch { /* best-effort */ }
+  }
+}
+
 // ── Prompt ──────────────────────────────────────────────────────
 
 function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): string {
@@ -1035,6 +1047,16 @@ async function main() {
           try { await tgSend(config, `❌ Error: Claude exited with code ${code} after ${elapsed}s`); }
           catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
         }
+      }
+
+      // Refresh comment baselines so the agent's own post-cycle comments
+      // don't appear as "new" on the next poll.
+      const processedIds = [
+        ...work.tasks.map(t => t.id),
+        ...work.commentUpdates.map(cu => cu.id),
+      ];
+      if (processedIds.length) {
+        await refreshCommentBaselines(processedIds);
       }
 
     if (config.once) break;
