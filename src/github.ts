@@ -17,7 +17,7 @@ const LABEL = {
 
 const META_VERSION = "v1";
 
-export type TaskStatus = "assigned" | "planned" | "approved" | "in-progress" | "completed";
+export type TaskStatus = "assigned" | "planned" | "approved" | "in-progress" | "completed" | "failed";
 export type TaskPriority = "low" | "medium" | "high";
 
 export interface Task {
@@ -30,6 +30,7 @@ export interface Task {
   labels: string[];
   body: string;
   workspace: string | null;
+  updatedAt?: string;
 }
 
 export interface LotaError {
@@ -175,7 +176,7 @@ async function swapLabels(issueNumber: number, prefix: string, newLabel: string)
   });
 }
 
-type GhIssue = { number: number; title: string; body?: string; labels: { name: string }[] };
+type GhIssue = { number: number; title: string; body?: string; labels: { name: string }[]; updated_at?: string };
 
 function extractFromIssue(issue: GhIssue): Task {
   const labels = issue.labels.map(l => l.name);
@@ -184,7 +185,7 @@ function extractFromIssue(issue: GhIssue): Task {
   const priority = labels.find(l => l.startsWith(LABEL.PRIORITY))?.slice(LABEL.PRIORITY.length) || null;
   const meta = parseBodyMeta(issue.body || "");
   const workspace = (meta.workspace as string) || null;
-  return { id: issue.number, number: issue.number, title: issue.title, status, assignee, priority, labels, body: issue.body || "", workspace };
+  return { id: issue.number, number: issue.number, title: issue.title, status, assignee, priority, labels, body: issue.body || "", workspace, updatedAt: issue.updated_at };
 }
 
 // ── Router ──────────────────────────────────────────────────

@@ -221,6 +221,92 @@ function logMemory(label: string, config: AgentConfig): void {
   }
 }
 
+// ── Startup recovery ─────────────────────────────────────────────
+
+async function recoverStaleTasks(config: AgentConfig): Promise<void> {
+  process.env.GITHUB_TOKEN = config.githubToken;
+  process.env.GITHUB_REPO = config.githubRepo;
+  process.env.AGENT_NAME = config.agentName;
+
+  log("🔍 Checking for stale in-progress tasks from previous crash...");
+
+  let tasks: Array<{ id: number; title: string; assignee: string | null; updatedAt?: string }>;
+  try {
+    tasks = await lota("GET", "/tasks?status=in-progress") as Array<{ id: number; title: string; assignee: string | null; updatedAt?: string }>;
+  } catch (e) {
+    err(`Startup recovery check failed: ${(e as Error).message}`);
+    return;
+  }
+
+  const myTasks = tasks.filter(t => t.assignee === config.agentName);
+  if (!myTasks.length) {
+    dim("  No stale in-progress tasks found.");
+    return;
+  }
+
+  const TWO_MINUTES_MS = 2 * 60 * 1000;
+
+  for (const task of myTasks) {
+    if (task.updatedAt) {
+      const updatedAt = new Date(task.updatedAt).getTime();
+      if (Date.now() - updatedAt < TWO_MINUTES_MS) {
+        dim(`  ⏭ Skipping task #${task.id} "${task.title}" (updated < 2 min ago, may be active)`);
+        continue;
+      }
+    }
+
+    let details: { comments?: Array<{ body: string }> };
+    try {
+      details = await lota("GET", `/tasks/${task.id}`) as { comments?: Array<{ body: string }> };
+    } catch (e) {
+      err(`Failed to fetch details for task #${task.id}: ${(e as Error).message}`);
+      continue;
+    }
+
+    const comments = details.comments || [];
+    let retryCount = 0;
+    for (const c of comments) {
+      const match = c.body.match(/⚠️ Retry (\d+)\/3/);
+      if (match) retryCount = Math.max(retryCount, parseInt(match[1], 10));
+    }
+
+    if (retryCount < 3) {
+      const nextRetry = retryCount + 1;
+      log(`🔄 Recovering task #${task.id} "${task.title}" (retry ${nextRetry}/3)`);
+      try {
+        await lota("POST", `/tasks/${task.id}/status`, { status: "assigned" });
+        await lota("POST", `/tasks/${task.id}/comment`, {
+          content: `🔄 Auto-recovery: task was in-progress when agent crashed. ⚠️ Retry ${nextRetry}/3`,
+        });
+      } catch (e) {
+        err(`Failed to recover task #${task.id}: ${(e as Error).message}`);
+        continue;
+      }
+      if (config.mode === "supervised") {
+        try { await tgSend(config, `🔄 Task #${task.id} auto-recovered after crash (retry ${nextRetry}/3): ${task.title}`); }
+        catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
+      }
+    } else {
+      log(`❌ Task #${task.id} "${task.title}" — 3 crash recoveries exhausted, marking failed`);
+      try {
+        await lota("POST", `/tasks/${task.id}/status`, { status: "failed" });
+        await lota("POST", `/tasks/${task.id}/comment`, {
+          content: `❌ Task failed after 3 crash recoveries. Manual review needed.`,
+        });
+      } catch (e) {
+        err(`Failed to mark task #${task.id} as failed: ${(e as Error).message}`);
+        continue;
+      }
+      if (config.mode === "supervised") {
+        try { await tgSend(config, `❌ Task #${task.id} failed after 3 crash recoveries — manual review needed: ${task.title}`); }
+        catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
+      }
+    }
+  }
+
+  log("✅ Startup recovery complete.");
+}
+
 // ── Pre-check (zero-cost, no LLM) ──────────────────────────────
 
 interface TaskInfo {
@@ -1083,6 +1169,9 @@ async function main() {
     try { await tgSend(config, "🤖 Lota is online. Watching for tasks."); }
     catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
   }
+
+  // Recover stale in-progress tasks from a previous crash before polling
+  await recoverStaleTasks(config);
 
   // Main loop: poll → check → spawn → sleep
   let emptyPolls = 0;
