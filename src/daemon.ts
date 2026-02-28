@@ -1,11 +1,22 @@
 #!/usr/bin/env node
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, statSync, createWriteStream } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, statSync, createWriteStream, unlinkSync } from "node:fs";
 import type { WriteStream } from "node:fs";
 import { resolve, join } from "node:path";
 import { lota, getRateLimitInfo } from "./github.js";
 import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
 
+
+// ── Early name detection (before log init) ──────────────────────
+// Quick pre-scan of argv for --name/-n so LOG_FILE is set correctly at module level.
+function _earlyGetName(): string {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === "--name" || args[i] === "-n") return args[i + 1];
+  }
+  return "";
+}
+const _EARLY_AGENT_NAME = _earlyGetName();
 
 // ── Config ──────────────────────────────────────────────────────
 
@@ -39,6 +50,7 @@ function parseArgs(): AgentConfig {
   let singlePhaseOverride: boolean | null = null;
   let timeout = 600;
   let maxRssMb = 1024;
+  let nameOverride = "";
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -52,6 +64,7 @@ function parseArgs(): AgentConfig {
       case "--no-single-phase": singlePhaseOverride = false; break;
       case "--timeout": timeout = parseInt(args[++i], 10); break;
       case "--max-rss": maxRssMb = parseInt(args[++i], 10); break;
+      case "--name": case "-n": nameOverride = args[++i]; break;
       case "--help": case "-h":
         console.log(`Usage: lota-agent [options]
 
@@ -59,6 +72,7 @@ Autonomous LOTA agent (GitHub-backed).
 Listens for assigned tasks, plans, executes, and reports.
 
 Options:
+  -n, --name <name>     Agent identity (default: lota). Sets log file, PID file, and task label filter.
   -c, --config <path>   MCP config file (default: .mcp.json)
   -m, --model <model>   Claude model (default: sonnet)
   -i, --interval <sec>  Poll interval in seconds (default: 15)
@@ -132,6 +146,8 @@ Options:
   // Defaults
   if (!githubRepo) githubRepo = process.env.GITHUB_REPO || "xliry/lota-agents";
   if (!agentName) agentName = process.env.AGENT_NAME || "lota";
+  // CLI --name flag overrides everything
+  if (nameOverride) agentName = nameOverride;
 
   // Supervised mode requires Telegram
   if (mode === "supervised" && !telegramBotToken) {
@@ -149,10 +165,15 @@ Options:
 // ── Logging (stdout + file) ──────────────────────────────────────
 
 const LOG_DIR = join(process.env.HOME || "~", "lota");
-const LOG_FILE = join(LOG_DIR, "agent.log");
+// Default agent (lota) keeps backwards-compatible `agent.log`; named agents get `agent-<name>.log`
+const LOG_FILE = (_EARLY_AGENT_NAME && _EARLY_AGENT_NAME !== "lota")
+  ? join(LOG_DIR, `agent-${_EARLY_AGENT_NAME}.log`)
+  : join(LOG_DIR, "agent.log");
 const LOG_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 
+const AGENTS_DIR = join(LOG_DIR, ".agents");
 mkdirSync(LOG_DIR, { recursive: true });
+mkdirSync(AGENTS_DIR, { recursive: true });
 
 function rotateLogs(): void {
   if (existsSync(`${LOG_FILE}.1`)) renameSync(`${LOG_FILE}.1`, `${LOG_FILE}.2`);
@@ -218,6 +239,76 @@ function logMemory(label: string, config: AgentConfig): void {
   if (rssMb > config.maxRssMb) {
     err(`🔴 RSS ${rssMb}MB exceeds limit ${config.maxRssMb}MB — graceful exit (code 42)`);
     process.exit(42);
+  }
+}
+
+// ── PID registry ─────────────────────────────────────────────────
+
+let activeAgentName = ""; // set in main() after parseArgs, used by shutdown handler
+
+function getPidFile(name: string): string {
+  return join(AGENTS_DIR, `${name}.pid`);
+}
+
+function checkAndCleanStalePid(name: string): void {
+  const pidFile = getPidFile(name);
+  if (!existsSync(pidFile)) return;
+  try {
+    const data = JSON.parse(readFileSync(pidFile, "utf-8")) as { pid?: number; started?: string };
+    const pid = data.pid;
+    if (typeof pid !== "number") {
+      dim(`Removing malformed PID file for "${name}"`);
+      try { unlinkSync(pidFile); } catch { /* ignore */ }
+      return;
+    }
+    try {
+      process.kill(pid, 0); // signal 0 = existence check, does not kill
+      // Process is alive
+      log(`⚠️ Another instance of "${name}" may already be running (PID ${pid})`);
+      if (data.started) log(`   Started: ${data.started}`);
+      log(`   If it crashed, delete: ${pidFile}`);
+    } catch (killErr) {
+      const code = (killErr as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") {
+        // No such process — stale
+        dim(`Cleaning up stale PID file for "${name}" (PID ${pid} is dead)`);
+        try { unlinkSync(pidFile); } catch { /* ignore */ }
+      } else if (code === "EPERM") {
+        // Process exists but we can't signal it (different user) — treat as alive
+        log(`⚠️ Agent "${name}" may already be running (PID ${pid}, EPERM)`);
+      }
+    }
+  } catch (e) {
+    dim(`[non-critical] Failed to check PID file: ${(e as Error).message}`);
+    try { unlinkSync(pidFile); } catch { /* ignore */ }
+  }
+}
+
+function writePidFile(name: string, model: string): void {
+  const pidFile = getPidFile(name);
+  try {
+    const data = {
+      pid: process.pid,
+      name,
+      started: new Date().toISOString(),
+      model,
+    };
+    writeFileSync(pidFile, JSON.stringify(data, null, 2) + "\n", { mode: 0o644 });
+    dim(`PID file: ${pidFile}`);
+  } catch (e) {
+    dim(`[non-critical] Failed to write PID file: ${(e as Error).message}`);
+  }
+}
+
+function removePidFile(name: string): void {
+  const pidFile = getPidFile(name);
+  try {
+    if (existsSync(pidFile)) {
+      unlinkSync(pidFile);
+      dim(`PID file removed: ${pidFile}`);
+    }
+  } catch (e) {
+    dim(`[non-critical] Failed to remove PID file: ${(e as Error).message}`);
   }
 }
 
@@ -1094,11 +1185,13 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     if (stopped) {
       if (currentProcess) currentProcess.kill("SIGKILL");
+      if (activeAgentName) removePidFile(activeAgentName);
       logStream.end();
       process.exit(0);
     }
     stopped = true;
     log("Shutting down...");
+    if (activeAgentName) removePidFile(activeAgentName);
     if (currentProcess) {
       currentProcess.kill("SIGTERM");
       setTimeout(() => {
@@ -1124,6 +1217,11 @@ function sleep(sec: number): Promise<void> {
 
 async function main() {
   const config = parseArgs();
+  activeAgentName = config.agentName;
+
+  // PID registry: check for stale/live instances, then register this one
+  checkAndCleanStalePid(config.agentName);
+  writePidFile(config.agentName, config.model);
 
   // Telegram setup for supervised mode
   if (config.mode === "supervised" && !config.telegramChatId) {
@@ -1139,6 +1237,8 @@ async function main() {
   const modeLabel = config.mode === "supervised"
     ? "supervised (Telegram)"
     : config.singlePhase ? "autonomous (single-phase)" : "autonomous";
+  const _home = process.env.HOME || "/root";
+  const prettyPath = (p: string) => p.startsWith(_home) ? "~" + p.slice(_home.length) : p;
   const banner = [
     "",
     "  ┌─────────────────────────┐",
@@ -1150,7 +1250,8 @@ async function main() {
     `  config:   ${config.configPath}`,
     `  interval: ${config.interval}s`,
     `  max-tasks: ${config.maxTasksPerCycle} per cycle`,
-    `  log:      ${LOG_FILE}`,
+    `  log:      ${prettyPath(LOG_FILE)}`,
+    `  pid:      ${prettyPath(getPidFile(config.agentName))}`,
     "",
   ];
   for (const line of banner) {
