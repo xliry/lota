@@ -416,6 +416,41 @@ async function recoverStaleTasks(config: AgentConfig): Promise<void> {
   log("✅ Startup recovery complete.");
 }
 
+// ── Runtime stale-task recovery (periodic, every N poll cycles) ──
+
+const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+async function checkRuntimeStaleTasks(config: AgentConfig): Promise<void> {
+  let tasks: Array<{ id: number; title: string; assignee: string | null; updatedAt?: string }>;
+  try {
+    tasks = await lota("GET", "/tasks?status=in-progress") as Array<{ id: number; title: string; assignee: string | null; updatedAt?: string }>;
+  } catch (e) {
+    dim(`Runtime stale-task check failed: ${(e as Error).message}`);
+    return;
+  }
+
+  const myTasks = tasks.filter(t => t.assignee === config.agentName);
+  if (!myTasks.length) return;
+
+  const now = Date.now();
+  for (const task of myTasks) {
+    if (!task.updatedAt) continue;
+    const age = now - new Date(task.updatedAt).getTime();
+    if (age < FIVE_MINUTES_MS) continue;
+
+    const ageMin = Math.round(age / 60000);
+    log(`🔄 Runtime recovery: task #${task.id} "${task.title}" stuck for ${ageMin}m — resetting to assigned`);
+    try {
+      await lota("POST", `/tasks/${task.id}/status`, { status: "assigned" });
+      await lota("POST", `/tasks/${task.id}/comment`, {
+        content: `🔄 Runtime recovery: task was stuck in-progress for ${ageMin} minutes. Reset to assigned for retry.`,
+      });
+    } catch (e) {
+      err(`Failed to runtime-recover task #${task.id}: ${(e as Error).message}`);
+    }
+  }
+}
+
 // ── Pre-check (zero-cost, no LLM) ──────────────────────────────
 
 interface TaskInfo {
@@ -1261,7 +1296,10 @@ async function main() {
       if (emptyPolls === 1 || emptyPolls % 10 === 0) {
         dim(`No pending work (${emptyPolls} checks) — next in ${nextInterval}s`);
       }
-      if (pollCycles % 10 === 0) logMemory("Periodic", config);
+      if (pollCycles % 10 === 0) {
+        logMemory("Periodic", config);
+        await checkRuntimeStaleTasks(config);
+      }
       if (config.once) break;
       await sleep(nextInterval);
       continue;
@@ -1387,7 +1425,7 @@ async function main() {
 
     if (config.once) break;
 
-    // Log rate limit status and memory every 10 cycles
+    // Log rate limit status and memory every 10 cycles; also check for stuck tasks
     if (pollCycles % 10 === 0) {
       const rl = getRateLimitInfo();
       if (rl) {
@@ -1395,6 +1433,7 @@ async function main() {
         dim(`Rate limit: ${rl.remaining}/${rl.limit} remaining (resets in ${resetIn}m)`);
       }
       logMemory("Periodic", config);
+      await checkRuntimeStaleTasks(config);
     }
 
     dim(`Polling in ${config.interval}s...`);
