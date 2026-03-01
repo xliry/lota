@@ -1435,6 +1435,13 @@ async function main() {
           try { await tgSend(config, `❌ Error: Claude exited with code ${code} after ${elapsed}s`); }
           catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
         }
+        // Reset in-progress tasks back to assigned so they get picked up on next poll
+        for (const t of work.tasks) {
+          lota("POST", `/tasks/${t.id}/comment`, {
+            content: `⚠️ Agent crashed (exit code ${code}). Task reset to assigned for retry.`,
+          }).catch(() => { /* best-effort */ });
+          lota("POST", `/tasks/${t.id}/status`, { status: "assigned" }).catch(() => { /* best-effort */ });
+        }
       }
 
       // Refresh comment baselines so the agent's own post-cycle comments
