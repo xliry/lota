@@ -193,39 +193,18 @@ function extractFromIssue(issue: GhIssue): Task {
   return { id: issue.number, number: issue.number, title: issue.title, status, assignee, priority, labels, body: issue.body || "", workspace, updatedAt: issue.updated_at };
 }
 
-// ── Router ──────────────────────────────────────────────────
-
-type Handler = (params: Record<string, string>, query: URLSearchParams, body?: Record<string, unknown>) => Promise<unknown>;
-
-interface Route {
-  method: string;
-  pattern: RegExp;
-  paramNames: string[];
-  handler: Handler;
-}
-
-function route(method: string, path: string, handler: Handler): Route {
-  const paramNames: string[] = [];
-  const regexStr = path.replace(/:(\w+)/g, (_, name) => {
-    paramNames.push(name);
-    return "(\\w+)";
-  });
-  return { method, pattern: new RegExp(`^${regexStr}$`), paramNames, handler };
-}
-
 // ── Handlers ────────────────────────────────────────────────
 
-const getTasks: Handler = async (_params, query) => {
+async function getTasks(query: URLSearchParams): Promise<unknown> {
   const status = query.get("status");
   const labels = status
     ? `${LABEL.TYPE},${LABEL.STATUS}${status}`
     : `${LABEL.TYPE},${LABEL.AGENT}${agent()}`;
   const issues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(labels)}&state=open`) as GhIssue[];
   return issues.map(extractFromIssue);
-};
+}
 
-const getTask: Handler = async (params) => {
-  const { id } = params;
+async function getTask(id: number): Promise<unknown> {
   const [issue, comments] = await Promise.all([
     gh(`/repos/${repo()}/issues/${id}`) as Promise<GhIssue>,
     gh(`/repos/${repo()}/issues/${id}/comments`) as Promise<Array<{ body: string; created_at: string; user: { login: string } }>>,
@@ -234,9 +213,9 @@ const getTask: Handler = async (params) => {
   const plan = comments.map(c => parseMetadata(c.body, "plan")).find(Boolean) || null;
   const report = comments.map(c => parseMetadata(c.body, "report")).find(Boolean) || null;
   return { ...task, plan, report, comments: comments.map(c => ({ body: c.body, created_at: c.created_at, user: c.user.login })) };
-};
+}
 
-const createTask: Handler = async (_params, _query, body) => {
+async function createTask(body: Record<string, unknown>): Promise<unknown> {
   const { title, assign, priority, body: taskBody, workspace } = body as {
     title: string; assign?: string; priority?: string; body?: string; workspace?: string;
   };
@@ -250,10 +229,9 @@ const createTask: Handler = async (_params, _query, body) => {
     method: "POST",
     body: JSON.stringify({ title, body: finalBody, labels }),
   });
-};
+}
 
-const savePlan: Handler = async (params, _query, body) => {
-  const { id } = params;
+async function savePlan(id: number, body: Record<string, unknown>): Promise<unknown> {
   const { goals, affected_files, effort, notes } = body as {
     goals: string[]; affected_files?: string[]; effort?: string; notes?: string;
   };
@@ -263,10 +241,9 @@ const savePlan: Handler = async (params, _query, body) => {
     method: "POST",
     body: JSON.stringify({ body: comment }),
   });
-};
+}
 
-const updateStatus: Handler = async (params, _query, body) => {
-  const id = Number(params.id);
+async function updateStatus(id: number, body: Record<string, unknown>): Promise<unknown> {
   const { status } = body as { status: string };
   await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}${status}`);
   if (status === "completed") {
@@ -276,14 +253,12 @@ const updateStatus: Handler = async (params, _query, body) => {
     });
   }
   return { ok: true, status };
-};
+}
 
-const completeTask: Handler = async (params, _query, body) => {
-  const { id } = params;
+async function completeTask(id: number, body: Record<string, unknown>): Promise<unknown> {
   const { summary, modified_files, new_files } = body as {
     summary: string; modified_files?: string[]; new_files?: string[];
   };
-  const numId = Number(id);
   const result = {
     ok: false,
     commentPosted: false,
@@ -310,11 +285,11 @@ const completeTask: Handler = async (params, _query, body) => {
 
   // Step 2: Swap status label to completed (retry once on failure)
   try {
-    await swapLabels(numId, LABEL.STATUS, `${LABEL.STATUS}completed`);
+    await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}completed`);
     result.labelSwapped = true;
   } catch (err) {
     try {
-      await swapLabels(numId, LABEL.STATUS, `${LABEL.STATUS}completed`);
+      await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}completed`);
       result.labelSwapped = true;
     } catch (retryErr) {
       const msg = `[task #${id}] Step 2 (label swap to completed) failed after retry: ${(retryErr as Error).message}`;
@@ -344,7 +319,7 @@ const completeTask: Handler = async (params, _query, body) => {
       console.error(msg);
       // Revert label to in-progress to keep state consistent (open + in-progress)
       try {
-        await swapLabels(numId, LABEL.STATUS, `${LABEL.STATUS}in-progress`);
+        await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}in-progress`);
       } catch (revertErr) {
         const revertMsg = `[task #${id}] Failed to revert label after close failure: ${(revertErr as Error).message}`;
         result.errors.push(revertMsg);
@@ -355,25 +330,23 @@ const completeTask: Handler = async (params, _query, body) => {
   }
 
   return { ...result, ok: true };
-};
+}
 
-const addComment: Handler = async (params, _query, body) => {
-  const { id } = params;
+async function addComment(id: number, body: Record<string, unknown>): Promise<unknown> {
   const { content } = body as { content: string };
   return await gh(`/repos/${repo()}/issues/${id}/comments`, {
     method: "POST",
     body: JSON.stringify({ body: content }),
   });
-};
+}
 
-const assignTask: Handler = async (params, _query, body) => {
-  const { id } = params;
+async function assignTask(id: number, body: Record<string, unknown>): Promise<unknown> {
   const { agent: newAgent } = body as { agent: string };
-  await swapLabels(Number(id), LABEL.AGENT, `${LABEL.AGENT}${newAgent}`);
+  await swapLabels(id, LABEL.AGENT, `${LABEL.AGENT}${newAgent}`);
   return { ok: true, agent: newAgent };
-};
+}
 
-const sync: Handler = async () => {
+async function sync(): Promise<unknown> {
   // Fetch assigned tasks (need planning)
   const assignedLabels = `${LABEL.TYPE},${LABEL.AGENT}${agent()},${LABEL.STATUS}assigned`;
   const assignedIssues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(assignedLabels)}&state=open`) as GhIssue[];
@@ -409,41 +382,30 @@ const sync: Handler = async () => {
   }));
 
   return { assigned, approved, in_progress: inProgress, failed, recently_completed: recentlyCompleted };
-};
-
-// ── Route table ─────────────────────────────────────────────
-
-const routes: Route[] = [
-  route("GET",  "/tasks",              getTasks),
-  route("GET",  "/tasks/:id",          getTask),
-  route("POST", "/tasks",              createTask),
-  route("POST", "/tasks/:id/plan",     savePlan),
-  route("POST", "/tasks/:id/status",   updateStatus),
-  route("POST", "/tasks/:id/complete", completeTask),
-  route("POST", "/tasks/:id/comment",  addComment),
-  route("POST", "/tasks/:id/assign",   assignTask),
-  route("GET",  "/sync",               sync),
-];
+}
 
 // ── Main dispatcher ─────────────────────────────────────────
 
 export async function lota(method: string, path: string, body?: Record<string, unknown>): Promise<unknown> {
-  const url = new URL(path, "http://localhost");
-  const p = url.pathname;
-  const query = url.searchParams;
+  const [pathname, queryStr] = path.split("?");
+  const query = new URLSearchParams(queryStr || "");
+  const idMatch = pathname.match(/\/tasks\/(\d+)/);
+  const id = idMatch ? Number(idMatch[1]) : undefined;
+  const endpoint = pathname.replace(/\/tasks\/\d+/, "/tasks/:id");
 
-  for (const r of routes) {
-    if (r.method !== method) continue;
-    const match = p.match(r.pattern);
-    if (!match) continue;
-
-    const params: Record<string, string> = {};
-    r.paramNames.forEach((name, i) => { params[name] = match[i + 1]; });
-    return r.handler(params, query, body);
+  switch (`${method} ${endpoint}`) {
+    case "GET /sync":              return sync();
+    case "GET /tasks":             return getTasks(query);
+    case "GET /tasks/:id":         return getTask(id!);
+    case "POST /tasks":            return createTask(body!);
+    case "POST /tasks/:id/plan":   return savePlan(id!, body!);
+    case "POST /tasks/:id/status": return updateStatus(id!, body!);
+    case "POST /tasks/:id/complete": return completeTask(id!, body!);
+    case "POST /tasks/:id/comment": return addComment(id!, body!);
+    case "POST /tasks/:id/assign": return assignTask(id!, body!);
+    default: throw Object.assign(
+      new Error(`Unknown route: ${method} ${path}`),
+      { code: "LOTA_UNKNOWN_ROUTE" }
+    );
   }
-
-  throw Object.assign(
-    new Error(`Unknown route: ${method} ${path}`),
-    { code: "LOTA_UNKNOWN_ROUTE" }
-  );
 }
