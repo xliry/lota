@@ -34,7 +34,7 @@ The user controls the gate between planning and execution.
 Fetch state and show a clean dashboard:
 
 ```
-lota("GET", "/sync")
+lota("GET", "/sync?all=true")
 ```
 
 Also fetch planned tasks waiting for approval:
@@ -147,45 +147,45 @@ When the user asks to create **multiple tasks at once** (e.g., "13 task oluştur
 
 1. **Discover alive agents** (see Agent Discovery section above)
 2. **Parse dependencies**: If a task depends on another, note it
-3. **Wave analysis**:
-   - **Wave 0**: tasks with no dependencies → assign immediately
-   - **Wave 1+**: tasks that depend on Wave 0 tasks → create as `status:blocked`
-4. **Round-robin only Wave 0** across agents
-5. **Show distribution before creating** (confirm once if count > 5):
+3. **Group by workspace**: Tasks targeting the same workspace must be serialized
+4. **Wave analysis** (two sources of dependency):
+   - **Explicit dependencies**: user-specified `depends_on`
+   - **Workspace serialization**: tasks in the same workspace form a chain
+     - Within each workspace, only the FIRST task is Wave 0
+     - Subsequent tasks depend on the previous one in that workspace
+   - **Different workspaces**: fully parallel, no implicit dependency
+5. **Round-robin only Wave 0** across agents
+6. **Show distribution before creating** (confirm once if count > 5):
    ```
-   Creating 9 tasks across 3 agents:
-     Wave 0 (immediate): 6 tasks
-       lota-1 → 2 tasks
-       lota-2 → 2 tasks
-       lota-3 → 2 tasks
-     Wave 1 (blocked, auto-unblocks): 3 tasks
-       lota-1 → 1 task (depends on #180)
-       lota-2 → 1 task (depends on #181, #182)
-       lota-3 → 1 task (depends on #183)
+   Creating 6 tasks across 3 agents:
+
+     ~/kid-club-vue (serialized — 3 tasks):
+       Wave 0: #200 "Scaffold project"        → lota-1 (assigned)
+       Wave 1: #201 "Create Pinia store"       → lota-2 (blocked, depends on #200)
+       Wave 2: #202 "Build layout system"      → lota-3 (blocked, depends on #201)
+
+     ~/bosphorus (serialized — 2 tasks):
+       Wave 0: #203 "Update About page"        → lota-2 (assigned)
+       Wave 1: #204 "Add contact form"         → lota-1 (blocked, depends on #203)
+
+     ~/lota (1 task):
+       Wave 0: #205 "Fix recovery loop"        → lota-3 (assigned)
+
+   Immediate: 3 tasks (Wave 0)
+   Blocked:   3 tasks (auto-unblock when deps complete)
    ```
-6. **Create Wave 0 tasks** normally (they get `status:assigned`):
+7. **Create Wave 0 tasks** normally (they get `status:assigned`):
    ```
-   lota("POST", "/tasks", {"title": "...", "assign": "lota-1", "priority": "medium", "body": "..."})
+   lota("POST", "/tasks", {"title": "...", "assign": "lota-1", "priority": "medium", "body": "...", "workspace": "~/kid-club-vue"})
    ```
-7. **Create Wave 1+ tasks** with `depends_on` (they get `status:blocked` automatically):
+8. **Create Wave 1+ tasks** with `depends_on` (they get `status:blocked` automatically):
    ```
-   lota("POST", "/tasks", {"title": "...", "assign": "lota-1", "body": "...\n\n## Depends on\n- #180", "depends_on": [180]})
+   lota("POST", "/tasks", {"title": "...", "assign": "lota-2", "body": "...\n\n## Depends on\n- #200", "depends_on": [200], "workspace": "~/kid-club-vue"})
    ```
    Note: `depends_on` is stored in metadata. The human-readable "## Depends on" section in body is for visibility.
-8. **After all created**, show the summary:
-   ```
-   Created 9 tasks:
-     Wave 0 (assigned):
-       lota-1 → #28, #29
-       lota-2 → #30, #31
-       lota-3 → #32, #33
-     Wave 1 (blocked — auto-unblocks when deps complete):
-       lota-1 → #34 (depends on #28, #30, #32)
-       lota-2 → #35 (depends on #29)
-       lota-3 → #36 (depends on #31)
-   ```
+9. **After all created**, show the summary with workspace grouping.
 
-**Blocked tasks auto-unblock**: The daemon checks blocked tasks every poll cycle. When all `depends_on` tasks are completed, it automatically moves the blocked task to `assigned`.
+**Key rule: ONE task per workspace at a time.** Tasks in different workspaces run in parallel. Tasks in the same workspace run sequentially via `depends_on` chains. The daemon auto-unblocks the next task when the previous one completes.
 
 If only 1 agent alive, all tasks go to that agent (no distribution needed).
 

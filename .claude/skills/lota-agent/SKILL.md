@@ -207,10 +207,10 @@ Wait for user response. If they say yes with a count → add that many new agent
 Use the MCP tool to fetch pending tasks:
 
 ```
-mcp__lota__lota GET /sync
+mcp__lota__lota GET /sync?all=true
 ```
 
-Count total pending work = `assigned.length + approved.length`
+Count total pending work = `assigned.length + approved.length + blocked.length`
 
 Calculate recommended agent count:
 - pending <= 3  → 1 agent
@@ -248,9 +248,9 @@ Default to **auto** if user doesn't specify or skips.
 
 ---
 
-### Phase 7: Distribute tasks (dependency-aware)
+### Phase 7: Distribute tasks (workspace-serialized)
 
-Before spawning agents, distribute assigned tasks round-robin. Skip blocked tasks — they auto-unblock when dependencies complete.
+Before spawning agents, distribute assigned tasks round-robin. **Same workspace = sequential chain** to prevent conflicts.
 
 If agent count is 1:
 - Skip distribution (all tasks stay labeled `agent:lota-1`)
@@ -261,19 +261,17 @@ If agent count > 1:
    ```
    mcp__lota__lota GET /tasks?status=assigned
    ```
-2. Distribute round-robin (only `assigned` tasks, NOT `blocked`):
-   task[0] → lota-1, task[1] → lota-2, task[2] → lota-3, task[3] → lota-1, ...
-3. For each task, reassign:
+2. **Group by workspace**. Within each workspace, only the first task stays `assigned` — the rest become `blocked` with `depends_on` chaining to the previous task.
+3. Distribute Wave 0 tasks (first task per workspace) round-robin across agents:
    ```
    mcp__lota__lota POST /tasks/{id}/assign  {"agent": "lota-N"}
    ```
 4. Log distribution clearly:
    > "Distributing tasks:
-   > - Task #42 → lota-1
-   > - Task #43 → lota-2
-   > - Task #44 → lota-3
-   > - Task #45 → lota-1
-   > - (2 blocked tasks will auto-unblock when dependencies complete)"
+   > - Task #42 (~/project-a) → lota-1
+   > - Task #43 (~/project-b) → lota-2
+   > - Task #44 (~/project-a) → blocked (depends on #42)
+   > - Task #45 (~/project-b) → blocked (depends on #43)"
 
 ---
 
