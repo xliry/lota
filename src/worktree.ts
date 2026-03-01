@@ -1,6 +1,6 @@
-import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as git from "./git.js";
 
 export interface WorktreeInfo {
   worktreePath: string;
@@ -14,16 +14,6 @@ interface MergeResult {
   output: string;
 }
 
-/** Check if a directory is a git repository. */
-function isGitRepo(dir: string): boolean {
-  try {
-    execSync("git rev-parse --git-dir", { cwd: dir, stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Add `.worktrees/` to the workspace's .gitignore if not already present. */
 function ensureWorktreeInGitignore(workspace: string): void {
   const gitignorePath = join(workspace, ".gitignore");
@@ -35,7 +25,9 @@ function ensureWorktreeInGitignore(workspace: string): void {
       content += ".worktrees/\n";
       writeFileSync(gitignorePath, content);
     }
-  } catch { /* ignore — best effort */ }
+  } catch {
+    // best-effort — non-fatal if .gitignore is unwritable
+  }
 }
 
 /**
@@ -49,40 +41,21 @@ export function createWorktree(
   agentName: string,
   taskId: number,
 ): WorktreeInfo | null {
-  if (!isGitRepo(workspace)) return null;
+  if (!git.isGitRepo(workspace)) return null;
 
   const branch = `task-${taskId}-${agentName}`;
   const worktreesDir = join(workspace, ".worktrees");
   const worktreePath = join(worktreesDir, agentName);
 
-  try {
-    mkdirSync(worktreesDir, { recursive: true });
-    ensureWorktreeInGitignore(workspace);
+  mkdirSync(worktreesDir, { recursive: true });
+  ensureWorktreeInGitignore(workspace);
 
-    // Remove stale worktree for this agent slot if it exists
-    if (existsSync(worktreePath)) {
-      try {
-        execSync(`git worktree remove "${worktreePath}" --force`, {
-          cwd: workspace,
-          stdio: "pipe",
-        });
-      } catch { /* may already be cleaned */ }
-    }
+  // Remove stale worktree and branch for this agent slot if they exist
+  git.worktreeRemove(workspace, worktreePath);
+  git.deleteBranch(workspace, branch);
 
-    // Remove stale branch with same name if it exists
-    try {
-      execSync(`git branch -D "${branch}"`, { cwd: workspace, stdio: "pipe" });
-    } catch { /* branch may not exist — that's fine */ }
-
-    execSync(`git worktree add "${worktreePath}" -b "${branch}"`, {
-      cwd: workspace,
-      stdio: "pipe",
-    });
-
-    return { worktreePath, branch, originalWorkspace: workspace };
-  } catch {
-    return null;
-  }
+  if (!git.worktreeAdd(workspace, worktreePath, branch)) return null;
+  return { worktreePath, branch, originalWorkspace: workspace };
 }
 
 /**
@@ -96,107 +69,49 @@ export function createWorktree(
  * 4. If rebase also conflicts → true conflict, needs manual resolution
  */
 export function mergeWorktree(workspace: string, branch: string): MergeResult {
-  // Stash any uncommitted changes in the workspace before merging
-  let didStash = false;
-  try {
-    const stashOut = execSync("git stash", {
-      cwd: workspace,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-    didStash = !stashOut.includes("No local changes");
-  } catch { /* ignore — stash may fail if nothing to stash */ }
+  const didStash = git.stash(workspace);
+  git.pull(workspace);
 
-  // Pull latest main before merging — prevents conflicts from other agents' recent pushes
-  try {
-    execSync("git pull --ff-only origin main", {
-      cwd: workspace,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-  } catch {
-    // If ff-only fails, try regular pull
-    try {
-      execSync("git pull origin main --no-edit", {
-        cwd: workspace,
-        encoding: "utf-8",
-        stdio: "pipe",
-      });
-    } catch { /* ignore — we'll try merge anyway */ }
-  }
+  if (!git.merge(workspace, branch)) {
+    const hadConflicts = git.hasConflicts(workspace);
+    git.mergeAbort(workspace);
 
-  try {
-    const output = execSync(`git merge "${branch}" --no-edit`, {
-      cwd: workspace,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-
-    // Push merged main branch to origin — retry up to 3 times on race condition
-    const MAX_PUSH_RETRIES = 3;
-    let pushSuccess = false;
-    let lastPushError = "";
-    for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
-      try {
-        execSync("git push origin HEAD", { cwd: workspace, stdio: "pipe" });
-        pushSuccess = true;
-        break;
-      } catch (pushErr) {
-        lastPushError = (pushErr as Error).message;
-        if (attempt >= MAX_PUSH_RETRIES) break;
-        console.log(`[mergeWorktree] Push attempt ${attempt}/${MAX_PUSH_RETRIES} failed, retrying with fresh pull...`);
-        // Undo merge, pull latest main, re-merge, then retry push
-        try {
-          execSync("git reset --hard HEAD~1", { cwd: workspace, stdio: "pipe" });
-          execSync("git pull --ff-only origin main", { cwd: workspace, stdio: "pipe" });
-          execSync(`git merge "${branch}" --no-edit`, { cwd: workspace, stdio: "pipe" });
-        } catch (retryErr) {
-          // Re-merge failed (e.g. conflict after pull) — abort and give up
-          try { execSync("git merge --abort", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
-          if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
-          return {
-            success: false,
-            hasConflicts: true,
-            output: `Push retry ${attempt}: re-merge after pull failed — ${(retryErr as Error).message}`,
-          };
-        }
-      }
-    }
-    if (!pushSuccess) {
-      if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
-      return {
-        success: false,
-        hasConflicts: false,
-        output: `Push failed after ${MAX_PUSH_RETRIES} attempts: ${lastPushError}`,
-      };
-    }
-
-    // Restore stashed changes after successful merge+push
-    if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
-
-    return { success: true, hasConflicts: false, output: String(output) };
-  } catch (e) {
-    const msg = String((e as Error).message || e);
-    const hasConflicts = msg.includes("CONFLICT") || msg.toLowerCase().includes("conflict");
-
-    if (hasConflicts) {
-      // Abort the failed merge
-      try {
-        execSync("git merge --abort", { cwd: workspace, stdio: "pipe" });
-      } catch { /* ignore */ }
-
-      // Try rebase: update the task branch to include latest main, then fast-forward merge
+    if (hadConflicts) {
       const rebaseResult = tryRebaseThenMerge(workspace, branch);
       if (rebaseResult) {
-        if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
+        if (didStash) git.stashPop(workspace);
         return rebaseResult;
       }
     }
 
-    // Restore stashed changes on failure
-    if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
-    return { success: false, hasConflicts, output: msg };
+    if (didStash) git.stashPop(workspace);
+    return { success: false, hasConflicts: hadConflicts, output: "Merge failed" };
   }
+
+  // Push merged main branch to origin — retry up to 3 times on race condition
+  const MAX_PUSH_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
+    if (git.push(workspace)) {
+      if (didStash) git.stashPop(workspace);
+      return { success: true, hasConflicts: false, output: "Merged and pushed" };
+    }
+    if (attempt >= MAX_PUSH_RETRIES) break;
+    console.log(`[mergeWorktree] Push attempt ${attempt}/${MAX_PUSH_RETRIES} failed, retrying with fresh pull...`);
+    git.resetHard(workspace);
+    git.pull(workspace);
+    if (!git.merge(workspace, branch)) {
+      git.mergeAbort(workspace);
+      if (didStash) git.stashPop(workspace);
+      return {
+        success: false,
+        hasConflicts: true,
+        output: `Push retry ${attempt}: re-merge after pull failed`,
+      };
+    }
+  }
+
+  if (didStash) git.stashPop(workspace);
+  return { success: false, hasConflicts: false, output: `Push failed after ${MAX_PUSH_RETRIES} attempts` };
 }
 
 /**
@@ -204,65 +119,36 @@ export function mergeWorktree(workspace: string, branch: string): MergeResult {
  * Returns MergeResult on success/push-failure, or null if rebase itself conflicts.
  */
 function tryRebaseThenMerge(workspace: string, branch: string): MergeResult | null {
-  // Get the worktree path for this branch to run rebase there
-  const worktreesDir = join(workspace, ".worktrees");
-  let worktreePath: string | null = null;
-
   // Find the worktree directory that has this branch checked out
-  try {
-    const listOut = execSync("git worktree list --porcelain", {
-      cwd: workspace,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-    for (const block of listOut.split("\n\n")) {
-      if (block.includes(`branch refs/heads/${branch}`)) {
-        const pathLine = block.split("\n").find(l => l.startsWith("worktree "));
-        if (pathLine) worktreePath = pathLine.replace("worktree ", "");
-        break;
-      }
+  const listOut = git.worktreeList(workspace);
+  let worktreePath: string | null = null;
+  for (const block of listOut.split("\n\n")) {
+    if (block.includes(`branch refs/heads/${branch}`)) {
+      const pathLine = block.split("\n").find(l => l.startsWith("worktree "));
+      if (pathLine) worktreePath = pathLine.replace("worktree ", "");
+      break;
     }
-  } catch { /* ignore */ }
-
+  }
   if (!worktreePath || !existsSync(worktreePath)) return null;
 
   // Rebase the task branch on latest main
-  try {
-    execSync("git rebase main", {
-      cwd: worktreePath,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
-  } catch {
-    // Rebase conflicts — true conflict, abort and return null
-    try { execSync("git rebase --abort", { cwd: worktreePath, stdio: "pipe" }); } catch { /* ignore */ }
+  if (!git.rebase(worktreePath, "main")) {
+    git.rebaseAbort(worktreePath);
     return null;
   }
 
   // Rebase succeeded — now fast-forward merge on main
-  try {
-    const output = execSync(`git merge "${branch}" --ff-only`, {
-      cwd: workspace,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
+  if (!git.merge(workspace, branch, true)) return null;
 
-    // Push
-    try {
-      execSync("git push origin HEAD", { cwd: workspace, stdio: "pipe" });
-    } catch (pushErr) {
-      return {
-        success: false,
-        hasConflicts: false,
-        output: `Rebase+merge succeeded but push failed: ${(pushErr as Error).message}`,
-      };
-    }
-
-    return { success: true, hasConflicts: false, output: `Rebased and merged: ${String(output)}` };
-  } catch (e) {
-    // Fast-forward failed after rebase — shouldn't happen but handle it
-    return null;
+  if (!git.push(workspace)) {
+    return {
+      success: false,
+      hasConflicts: false,
+      output: "Rebase+merge succeeded but push failed",
+    };
   }
+
+  return { success: true, hasConflicts: false, output: "Rebased and merged" };
 }
 
 /** Remove a worktree directory and its associated branch. */
@@ -271,18 +157,8 @@ export function cleanupWorktree(
   agentName: string,
   branch: string,
 ): void {
-  const worktreePath = join(workspace, ".worktrees", agentName);
-  try {
-    if (existsSync(worktreePath)) {
-      execSync(`git worktree remove "${worktreePath}" --force`, {
-        cwd: workspace,
-        stdio: "pipe",
-      });
-    }
-  } catch { /* ignore */ }
-  try {
-    execSync(`git branch -D "${branch}"`, { cwd: workspace, stdio: "pipe" });
-  } catch { /* ignore */ }
+  git.worktreeRemove(workspace, join(workspace, ".worktrees", agentName));
+  git.deleteBranch(workspace, branch);
 }
 
 /**
@@ -290,27 +166,16 @@ export function cleanupWorktree(
  * Called on daemon startup to recover from unclean shutdowns.
  */
 export function cleanStaleWorktrees(workspace: string): void {
-  if (!isGitRepo(workspace)) return;
+  if (!git.isGitRepo(workspace)) return;
 
-  // git worktree prune removes entries whose paths no longer exist
-  try {
-    execSync("git worktree prune", { cwd: workspace, stdio: "pipe" });
-  } catch { /* ignore */ }
+  git.worktreePrune(workspace);
 
   const worktreesDir = join(workspace, ".worktrees");
   if (!existsSync(worktreesDir)) return;
 
-  try {
-    const entries = readdirSync(worktreesDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const entryPath = join(worktreesDir, entry.name);
-      try {
-        execSync(`git worktree remove "${entryPath}" --force`, {
-          cwd: workspace,
-          stdio: "pipe",
-        });
-      } catch { /* ignore — may already be clean */ }
+  for (const entry of readdirSync(worktreesDir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      git.worktreeRemove(workspace, join(worktreesDir, entry.name));
     }
-  } catch { /* ignore */ }
+  }
 }
