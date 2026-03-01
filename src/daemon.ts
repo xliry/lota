@@ -679,19 +679,8 @@ function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): st
     "    - `npm run build` catches bundler errors, missing assets, and more than just types.",
     "    - If no `build` script in package.json, fallback to `npx tsc`. Never skip build.",
     "    - If build fails, fix ALL errors before committing. Do NOT push broken code.",
+    "    - Do NOT use the Agent tool or Task tool. Use Grep and Read directly.",
   ];
-
-  // Subagent instructions
-  lines.push(
-    "",
-    "── SUBAGENTS ──",
-    "  Use the Task tool to spawn subagents for parallel and focused work:",
-    "  - Explore agent (subagent_type: 'Explore'): Search codebase, find files, understand architecture",
-    "  - Plan agent (subagent_type: 'Plan'): Design implementation approach before coding",
-    "  - General agent (subagent_type: 'general-purpose'): Execute complex multi-step tasks",
-    "",
-    "  Launch multiple Explore agents in parallel when investigating different areas.",
-  );
 
   // ── PHASE: COMMENTS ──
   if (work.phase === "comments") {
@@ -1048,7 +1037,7 @@ function runClaude(config: AgentConfig, work: WorkData): Promise<number> {
       ];
       const currentAllow: string[] = (existingSettings.permissions as { allow?: string[] })?.allow || [];
       const mergedAllow = [...new Set([...currentAllow, ...requiredPermissions])];
-      const deniedTools = ["TodoWrite"];
+      const deniedTools = ["TodoWrite", "Agent"];
       const currentDeny: string[] = (existingSettings.permissions as { deny?: string[] })?.deny || [];
       const mergedDeny = [...new Set([...currentDeny, ...deniedTools])];
       const mergedSettings = {
