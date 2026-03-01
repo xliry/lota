@@ -4,7 +4,7 @@ import { dim } from "./logging.js";
 // ── Core helper ───────────────────────────────────────────────────
 
 /** Run a git command. Never throws — returns ok/output result. */
-export function gitExec(cmd: string, cwd: string): { ok: boolean; output: string } {
+function gitExec(cmd: string, cwd: string): { ok: boolean; output: string } {
   try {
     const output = execSync(cmd, { cwd, encoding: "utf-8", stdio: "pipe" });
     return { ok: true, output: String(output ?? "") };
@@ -30,31 +30,16 @@ export function isGitRepoRoot(dir: string): boolean {
 }
 
 /** Check if a local branch exists. */
-export function branchExists(cwd: string, branch: string): boolean {
+function branchExists(cwd: string, branch: string): boolean {
   const r = gitExec(`git rev-parse --verify "refs/heads/${branch}"`, cwd);
   return r.ok;
 }
 
 /** Check if a worktree path is registered with git. */
-export function worktreeExists(cwd: string, path: string): boolean {
+function worktreeExists(cwd: string, path: string): boolean {
   const r = gitExec("git worktree list --porcelain", cwd);
   if (!r.ok) return false;
   return r.output.includes(`worktree ${path}`);
-}
-
-/** Check if there are uncommitted changes (staged or unstaged). */
-export function hasUncommittedChanges(cwd: string): boolean {
-  const r = gitExec("git status --porcelain", cwd);
-  if (!r.ok) return false;
-  return r.output.trim().length > 0;
-}
-
-/** Get the current branch name, or null if detached / not a repo. */
-export function getCurrentBranch(cwd: string): string | null {
-  const r = gitExec("git rev-parse --abbrev-ref HEAD", cwd);
-  if (!r.ok) return null;
-  const branch = r.output.trim();
-  return branch === "HEAD" ? null : branch;
 }
 
 /** Check if the working tree has unresolved merge conflicts. */

@@ -20,7 +20,6 @@ export const LOG_FILE = (_EARLY_AGENT_NAME && _EARLY_AGENT_NAME !== "lota")
   : join(LOG_DIR, "agent.log");
 
 const BYTES_PER_MB = 1024 * 1024;
-export { BYTES_PER_MB };
 const LOG_MAX_BYTES = 5 * BYTES_PER_MB;
 const MEMORY_WARNING_MB = 500;
 const MEMORY_CRITICAL_MB = 800;
@@ -42,7 +41,7 @@ logStream.on("error", () => {});
 logStream.write(`\n${"=".repeat(60)}\n[SESSION START] ${new Date().toISOString()}\n${"=".repeat(60)}\n`);
 
 // ── Log rotation check ───────────────────────────────────────────
-export function checkRotate(): void {
+function checkRotate(): void {
   try {
     if (existsSync(LOG_FILE) && statSync(LOG_FILE).size >= LOG_MAX_BYTES) {
       logStream.end();
@@ -57,7 +56,7 @@ export function checkRotate(): void {
 const time = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 const PRE = "\x1b[36m[lota]\x1b[0m";
 
-export function out(msg: string, plain: string): void {
+export function writeLog(msg: string, plain: string): void {
   checkRotate();
   console.log(msg);
   logStream.write(`${plain}\n`);
@@ -71,14 +70,15 @@ export function closeLog(): void {
   logStream.end();
 }
 
-export const log = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m ${msg}`, `[${time()}] ${msg}`);
-export const ok = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[32m✓ ${msg}\x1b[0m`, `[${time()}] ✓ ${msg}`);
-export const dim = (msg: string) => out(`${PRE} \x1b[90m${time()} ${msg}\x1b[0m`, `[${time()}] ${msg}`);
-export const err = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${msg}\x1b[0m`, `[${time()}] ✗ ${msg}`);
+export const log = (msg: string) => writeLog(`${PRE} \x1b[90m${time()}\x1b[0m ${msg}`, `[${time()}] ${msg}`);
+export const ok = (msg: string) => writeLog(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[32m✓ ${msg}\x1b[0m`, `[${time()}] ✓ ${msg}`);
+export const dim = (msg: string) => writeLog(`${PRE} \x1b[90m${time()} ${msg}\x1b[0m`, `[${time()}] ${msg}`);
+export const err = (msg: string) => writeLog(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${msg}\x1b[0m`, `[${time()}] ✗ ${msg}`);
 
 // ── Periodic GC hint ──────────────────────────────────────────────
 let lastGcTime = Date.now();
-const GC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const MS_PER_MINUTE = 60_000;
+const GC_INTERVAL_MS = 30 * MS_PER_MINUTE;
 
 export function periodicGcHint(): void {
   const now = Date.now();

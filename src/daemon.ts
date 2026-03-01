@@ -4,11 +4,13 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from "
 import { resolve, join } from "node:path";
 import { lota, getRateLimitInfo } from "./github.js";
 import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
-import { LOG_FILE, LOG_DIR, log, ok, dim, err, out, logMemory, periodicGcHint, closeLog } from "./logging.js";
+import { LOG_FILE, LOG_DIR, log, ok, dim, err, writeLog, logMemory, periodicGcHint, closeLog } from "./logging.js";
 import { checkForWork, refreshCommentBaselines } from "./comments.js";
 import { recoverStaleTasks, checkRuntimeStaleTasks } from "./recovery.js";
 import { runClaude, getCurrentProcess, resetBusy } from "./process.js";
 import type { AgentConfig, AgentMode, WorkData } from "./types.js";
+
+const MS_PER_MINUTE = 60_000;
 
 // ── PID registry ─────────────────────────────────────────────────
 const AGENTS_DIR = join(LOG_DIR, ".agents");
@@ -226,7 +228,7 @@ function printBanner(config: AgentConfig): void {
     `  pid:      ${prettyPath(getPidFile(config.agentName))}`,
     "",
   ];
-  for (const line of lines) out(line, line);
+  for (const line of lines) writeLog(line, line);
 }
 
 async function logWorkActivity(work: WorkData, config: AgentConfig): Promise<void> {
@@ -377,7 +379,7 @@ async function main() {
       continue;
     }
 
-    const elapsed = Math.round((Date.now() - cycleStart) / 1000);
+    const elapsed = Math.round((Date.now() - cycleStart) / MS_PER_SECOND);
     logMemory("Post-Claude", config);
     console.log("  ─────────────────────────────────────");
 
@@ -391,7 +393,7 @@ async function main() {
     if (pollCycles % 10 === 0) {
       const rl = getRateLimitInfo();
       if (rl) {
-        const resetIn = Math.max(0, Math.round((rl.reset * 1000 - Date.now()) / 60000));
+        const resetIn = Math.max(0, Math.round((rl.reset * MS_PER_SECOND - Date.now()) / MS_PER_MINUTE));
         dim(`Rate limit: ${rl.remaining}/${rl.limit} remaining (resets in ${resetIn}m)`);
       }
       logMemory("Periodic", config);

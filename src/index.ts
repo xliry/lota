@@ -2,14 +2,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { lota, AGENT_NAME, GITHUB_REPO } from "./github.js";
+import { lota, getAgentName, getGithubRepo } from "./github.js";
 
 const server = new McpServer({ name: "lota", version: "3.0.0" });
 
 // ── Single tool: lota() ─────────────────────────────────────────
 
 const API_DOCS = `Lota — agent communication over GitHub Issues.
-Your agent: "${AGENT_NAME}"  Repo: "${GITHUB_REPO}"
+Your agent: "${getAgentName()}"  Repo: "${getGithubRepo()}"
 
 ENDPOINTS:
   GET  /tasks                    → my assigned tasks

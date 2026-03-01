@@ -1,5 +1,5 @@
-export const GITHUB_REPO = process.env.GITHUB_REPO || "";
-export const AGENT_NAME = process.env.AGENT_NAME || "";
+export const getAgentName = () => process.env.AGENT_NAME || "";
+export const getGithubRepo = () => process.env.GITHUB_REPO || "";
 
 const token = () => process.env.GITHUB_TOKEN || "";
 const repo = () => process.env.GITHUB_REPO || "";
@@ -32,12 +32,6 @@ interface Task {
   depends_on: number[];
   retries: number;
   updatedAt?: string;
-}
-
-interface LotaError {
-  error: string;
-  code: string;
-  details?: unknown;
 }
 
 // ── GitHub API fetch wrapper (with retry + backoff) ─────────
@@ -82,7 +76,7 @@ function updateRateLimit(headers: Headers): void {
   }
 }
 
-async function gh(path: string, opts: RequestInit = {}): Promise<unknown> {
+async function githubFetch(path: string, opts: RequestInit = {}): Promise<unknown> {
   // Auto backoff when rate limit is critically low
   if (rateLimitInfo && rateLimitInfo.remaining < RATE_LIMIT_CRITICAL) {
     const waitUntil = rateLimitInfo.reset * MS_PER_SECOND;
@@ -113,7 +107,7 @@ async function gh(path: string, opts: RequestInit = {}): Promise<unknown> {
       // Rate limit — retry with backoff
       if (res.status === 403 || res.status === 429) {
         const retryAfter = res.headers.get("retry-after");
-        const delay = retryAfter ? parseInt(retryAfter, 10) * 1000 : BASE_DELAY_MS * Math.pow(2, attempt);
+        const delay = retryAfter ? parseInt(retryAfter, 10) * MS_PER_SECOND : BASE_DELAY_MS * Math.pow(2, attempt);
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
@@ -185,12 +179,12 @@ function replaceBodyMeta(body: string, newMeta: Record<string, unknown>): string
 }
 
 async function patchTaskMeta(id: number, updates: Record<string, unknown>): Promise<unknown> {
-  const issue = await gh(`/repos/${repo()}/issues/${id}`) as GhIssue;
+  const issue = await githubFetch(`/repos/${repo()}/issues/${id}`) as GhIssue;
   const currentBody = issue.body || "";
   const existingMeta = parseBodyMeta(currentBody);
   const newMeta = { ...existingMeta, ...updates };
   const updatedBody = replaceBodyMeta(currentBody, newMeta);
-  await gh(`/repos/${repo()}/issues/${id}`, {
+  await githubFetch(`/repos/${repo()}/issues/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ body: updatedBody }),
   });
@@ -201,10 +195,10 @@ async function patchTaskMeta(id: number, updates: Record<string, unknown>): Prom
 
 async function swapLabels(issueNumber: number, prefix: string, newLabel: string): Promise<void> {
   // Use single PATCH to replace all labels atomically (instead of DELETE + POST)
-  const issue = await gh(`/repos/${repo()}/issues/${issueNumber}`) as { labels: { name: string }[] };
+  const issue = await githubFetch(`/repos/${repo()}/issues/${issueNumber}`) as { labels: { name: string }[] };
   const kept = issue.labels.filter(l => !l.name.startsWith(prefix)).map(l => l.name);
   kept.push(newLabel);
-  await gh(`/repos/${repo()}/issues/${issueNumber}/labels`, {
+  await githubFetch(`/repos/${repo()}/issues/${issueNumber}/labels`, {
     method: "PUT",
     body: JSON.stringify({ labels: kept }),
   });
@@ -231,14 +225,14 @@ async function getTasks(query: URLSearchParams): Promise<unknown> {
   const labels = status
     ? `${LABEL.TYPE},${LABEL.STATUS}${status}`
     : `${LABEL.TYPE},${LABEL.AGENT}${agent()}`;
-  const issues = await gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(labels)}&state=open`) as GhIssue[];
+  const issues = await githubFetch(`/repos/${repo()}/issues?labels=${encodeURIComponent(labels)}&state=open`) as GhIssue[];
   return issues.map(extractFromIssue);
 }
 
 async function getTask(id: number): Promise<unknown> {
   const [issue, comments] = await Promise.all([
-    gh(`/repos/${repo()}/issues/${id}`) as Promise<GhIssue>,
-    gh(`/repos/${repo()}/issues/${id}/comments`) as Promise<Array<{ body: string; created_at: string; user: { login: string } }>>,
+    githubFetch(`/repos/${repo()}/issues/${id}`) as Promise<GhIssue>,
+    githubFetch(`/repos/${repo()}/issues/${id}/comments`) as Promise<Array<{ body: string; created_at: string; user: { login: string } }>>,
   ]);
   const task = extractFromIssue(issue);
   const plan = comments.map(c => parseMetadata(c.body, "plan")).find(Boolean) || null;
@@ -250,6 +244,9 @@ async function createTask(body: Record<string, unknown>): Promise<unknown> {
   const { title, assign, priority, body: taskBody, workspace, depends_on } = body as {
     title: string; assign?: string; priority?: string; body?: string; workspace?: string; depends_on?: number[];
   };
+  if (!title || typeof title !== "string" || !title.trim()) {
+    throw Object.assign(new Error("Task title is required"), { code: "LOTA_INVALID_INPUT" });
+  }
   const status = depends_on?.length ? "blocked" : "assigned";
   const labels = [LABEL.TYPE, `${LABEL.AGENT}${assign || agent()}`, `${LABEL.STATUS}${status}`];
   if (priority) labels.push(`${LABEL.PRIORITY}${priority}`);
@@ -263,7 +260,7 @@ async function createTask(body: Record<string, unknown>): Promise<unknown> {
     const mergedMeta = { ...existingMeta, ...meta };
     finalBody = replaceBodyMeta(finalBody, mergedMeta);
   }
-  return await gh(`/repos/${repo()}/issues`, {
+  return await githubFetch(`/repos/${repo()}/issues`, {
     method: "POST",
     body: JSON.stringify({ title, body: finalBody, labels }),
   });
@@ -275,7 +272,7 @@ async function savePlan(id: number, body: Record<string, unknown>): Promise<unkn
   };
   const humanText = `## Plan\n${goals.map(g => `- ${g}`).join("\n")}${effort ? `\nEstimated effort: ${effort}` : ""}${notes ? `\n\n${notes}` : ""}`;
   const comment = formatMetadata("plan", { goals, affected_files: affected_files || [], effort: effort || "medium", notes }, humanText);
-  return await gh(`/repos/${repo()}/issues/${id}/comments`, {
+  return await githubFetch(`/repos/${repo()}/issues/${id}/comments`, {
     method: "POST",
     body: JSON.stringify({ body: comment }),
   });
@@ -283,24 +280,24 @@ async function savePlan(id: number, body: Record<string, unknown>): Promise<unkn
 
 async function updateStatus(id: number, body: Record<string, unknown>): Promise<unknown> {
   const { status } = body as { status: string };
-  await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}${status}`);
   if (status === "completed") {
-    await gh(`/repos/${repo()}/issues/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ state: "closed" }),
-    });
-    try {
-      await unblockDependents(id);
-    } catch (err) {
-      console.error(`[task #${id}] Unblock dependents failed (non-fatal): ${(err as Error).message}`);
-    }
+    throw Object.assign(
+      new Error("Use POST /tasks/:id/complete to mark tasks as completed (ensures report is posted first)"),
+      { code: "LOTA_USE_COMPLETE_ENDPOINT" }
+    );
   }
+  await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}${status}`);
   return { ok: true, status };
+}
+
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try { return await fn(); }
+  catch { return await fn(); }
 }
 
 async function completeTask(id: number, body: Record<string, unknown>): Promise<unknown> {
   // Idempotency guard — skip if already completed
-  const issue = await gh(`/repos/${repo()}/issues/${id}`) as GhIssue;
+  const issue = await githubFetch(`/repos/${repo()}/issues/${id}`) as GhIssue;
   const currentLabels = issue.labels.map((l: { name: string }) => l.name);
   if (currentLabels.includes(`${LABEL.STATUS}completed`)) {
     return { ok: true, message: "Already completed (idempotent)" };
@@ -309,89 +306,59 @@ async function completeTask(id: number, body: Record<string, unknown>): Promise<
   const { summary, modified_files, new_files } = body as {
     summary: string; modified_files?: string[]; new_files?: string[];
   };
-  const result = {
-    ok: false,
-    commentPosted: false,
-    labelSwapped: false,
-    issueClosed: false,
-    errors: [] as string[],
-  };
+  const errors: string[] = [];
+  const addError = (msg: string) => { errors.push(msg); console.error(msg); };
 
   // Step 1: Post completion report comment
   const humanText = `## Completion Report\n${summary}${modified_files?.length ? `\n\nModified: ${modified_files.join(", ")}` : ""}${new_files?.length ? `\nNew: ${new_files.join(", ")}` : ""}`;
   const comment = formatMetadata("report", { summary, modified_files, new_files }, humanText);
   try {
-    await gh(`/repos/${repo()}/issues/${id}/comments`, {
+    await githubFetch(`/repos/${repo()}/issues/${id}/comments`, {
       method: "POST",
       body: JSON.stringify({ body: comment }),
     });
-    result.commentPosted = true;
   } catch (err) {
-    const msg = `[task #${id}] Step 1 (post comment) failed: ${(err as Error).message}`;
-    result.errors.push(msg);
-    console.error(msg);
-    return result;
+    addError(`[task #${id}] Post comment failed: ${(err as Error).message}`);
+    return { ok: false, commentPosted: false, labelSwapped: false, issueClosed: false, errors };
   }
 
-  // Step 2: Swap status label to completed (retry once on failure)
+  // Step 2: Swap status label to completed (retry once)
   try {
-    await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}completed`);
-    result.labelSwapped = true;
+    await withRetry(() => swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}completed`));
   } catch (err) {
-    try {
-      await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}completed`);
-      result.labelSwapped = true;
-    } catch (retryErr) {
-      const msg = `[task #${id}] Step 2 (label swap to completed) failed after retry: ${(retryErr as Error).message}`;
-      result.errors.push(msg);
-      console.error(msg);
-      return result;
-    }
+    addError(`[task #${id}] Label swap to completed failed after retry: ${(err as Error).message}`);
+    return { ok: false, commentPosted: true, labelSwapped: false, issueClosed: false, errors };
   }
 
-  // Step 3: Close the issue (retry once on failure)
+  // Step 3: Close the issue (retry once, revert label on failure)
   try {
-    await gh(`/repos/${repo()}/issues/${id}`, {
+    await withRetry(() => githubFetch(`/repos/${repo()}/issues/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ state: "closed" }),
-    });
-    result.issueClosed = true;
+    }));
   } catch (err) {
+    addError(`[task #${id}] Close issue failed after retry: ${(err as Error).message}. Reverting label.`);
     try {
-      await gh(`/repos/${repo()}/issues/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ state: "closed" }),
-      });
-      result.issueClosed = true;
-    } catch (retryErr) {
-      const msg = `[task #${id}] Step 3 (close issue) failed after retry: ${(retryErr as Error).message}. Reverting label to avoid completed+open inconsistency.`;
-      result.errors.push(msg);
-      console.error(msg);
-      // Revert label to in-progress to keep state consistent (open + in-progress)
-      try {
-        await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}in-progress`);
-      } catch (revertErr) {
-        const revertMsg = `[task #${id}] Failed to revert label after close failure: ${(revertErr as Error).message}`;
-        result.errors.push(revertMsg);
-        console.error(revertMsg);
-      }
-      return result;
+      await swapLabels(id, LABEL.STATUS, `${LABEL.STATUS}in-progress`);
+    } catch (revertErr) {
+      addError(`[task #${id}] Failed to revert label: ${(revertErr as Error).message}`);
     }
+    return { ok: false, commentPosted: true, labelSwapped: true, issueClosed: false, errors };
   }
 
-  // Step 4: Unblock dependent tasks whose dependencies are now all completed
+  // Step 4: Unblock dependent tasks (non-fatal)
   try {
     await unblockDependents(id);
   } catch (err) {
     console.error(`[task #${id}] Unblock dependents failed (non-fatal): ${(err as Error).message}`);
   }
 
-  return { ...result, ok: true };
+  return { ok: true, commentPosted: true, labelSwapped: true, issueClosed: true, errors };
 }
 
 async function unblockDependents(completedTaskId: number): Promise<void> {
   // Fetch all open issues with status:blocked label (across all agents)
-  const blockedIssues = await gh(
+  const blockedIssues = await githubFetch(
     `/repos/${repo()}/issues?labels=${encodeURIComponent(`${LABEL.TYPE},${LABEL.STATUS}blocked`)}&state=open&per_page=100`
   ) as GhIssue[];
 
@@ -404,12 +371,13 @@ async function unblockDependents(completedTaskId: number): Promise<void> {
     for (const depId of task.depends_on) {
       if (depId === completedTaskId) continue; // already completed
       try {
-        const depIssue = await gh(`/repos/${repo()}/issues/${depId}`) as { state: string };
+        const depIssue = await githubFetch(`/repos/${repo()}/issues/${depId}`) as { state: string };
         if (depIssue.state !== "closed") {
           allDepsCompleted = false;
           break;
         }
-      } catch {
+      } catch (e) {
+        console.error(`[non-critical] Failed to check dep #${depId}: ${(e as Error).message}`);
         allDepsCompleted = false;
         break;
       }
@@ -424,7 +392,7 @@ async function unblockDependents(completedTaskId: number): Promise<void> {
 
 async function addComment(id: number, body: Record<string, unknown>): Promise<unknown> {
   const { content } = body as { content: string };
-  return await gh(`/repos/${repo()}/issues/${id}/comments`, {
+  return await githubFetch(`/repos/${repo()}/issues/${id}/comments`, {
     method: "POST",
     body: JSON.stringify({ body: content }),
   });
@@ -443,9 +411,9 @@ async function sync(query?: URLSearchParams): Promise<unknown> {
 
   const [openIssues, completedIssues] = await Promise.all([
     // Call 1: all open tasks for this agent
-    gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(agentLabels)}&state=open&per_page=100`) as Promise<Array<GhIssue & { comments: number }>>,
+    githubFetch(`/repos/${repo()}/issues?labels=${encodeURIComponent(agentLabels)}&state=open&per_page=100`) as Promise<Array<GhIssue & { comments: number }>>,
     // Call 2: recently completed (closed) tasks
-    gh(`/repos/${repo()}/issues?labels=${encodeURIComponent(`${agentLabels},${LABEL.STATUS}completed`)}&state=closed&per_page=10&sort=updated&direction=desc`) as Promise<Array<GhIssue & { comments: number }>>,
+    githubFetch(`/repos/${repo()}/issues?labels=${encodeURIComponent(`${agentLabels},${LABEL.STATUS}completed`)}&state=closed&per_page=10&sort=updated&direction=desc`) as Promise<Array<GhIssue & { comments: number }>>,
   ]);
 
   // Filter open issues client-side by status label

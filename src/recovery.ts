@@ -6,8 +6,9 @@ import { tgSend } from "./telegram.js";
 import { log, ok, dim, err } from "./logging.js";
 import type { AgentConfig } from "./types.js";
 
-const FIVE_MINUTES_MS = 5 * 60 * 1000;
-const TWO_MINUTES_MS = 2 * 60 * 1000;
+const MS_PER_MINUTE = 60_000;
+const FIVE_MINUTES_MS = 5 * MS_PER_MINUTE;
+const TWO_MINUTES_MS = 2 * MS_PER_MINUTE;
 
 type StaleTask = { id: number; title: string; assignee: string | null; retries?: number; updatedAt?: string };
 
@@ -120,7 +121,7 @@ export async function checkRuntimeStaleTasks(config: AgentConfig): Promise<void>
     const age = now - new Date(task.updatedAt).getTime();
     if (age < FIVE_MINUTES_MS) continue;
 
-    const ageMin = Math.round(age / 60000);
+    const ageMin = Math.round(age / MS_PER_MINUTE);
     log(`🔄 Runtime recovery: task #${task.id} "${task.title}" stuck for ${ageMin}m — resetting to assigned`);
 
     const statusResult = await safeLota("POST", `/tasks/${task.id}/status`, { status: "assigned" });

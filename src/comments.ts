@@ -19,7 +19,8 @@ async function checkDependenciesMet(deps: number[], knownCompleted: Set<number>)
   return true;
 }
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const SEVEN_DAYS_MS = 7 * MS_PER_DAY;
 const BASELINES_FILE = join(process.env.HOME || "/root", "lota", ".comment-baselines.json");
 
 interface BaselineEntry {
@@ -27,11 +28,11 @@ interface BaselineEntry {
   ts: number;
 }
 
-export const lastSeenComments = new Map<number, number>();
+const lastSeenComments = new Map<number, number>();
 let baselinesDirty = false;
 
 // ── Baseline persistence ─────────────────────────────────────────
-export function loadCommentBaselines(): void {
+function loadCommentBaselines(): void {
   try {
     if (!existsSync(BASELINES_FILE)) return;
     const data = JSON.parse(readFileSync(BASELINES_FILE, "utf-8")) as Record<string, BaselineEntry>;
@@ -49,7 +50,7 @@ export function loadCommentBaselines(): void {
   }
 }
 
-export function saveCommentBaselines(): void {
+function saveCommentBaselines(): void {
   if (!baselinesDirty) return;
   try {
     const now = Date.now();

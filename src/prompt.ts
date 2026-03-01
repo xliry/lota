@@ -5,7 +5,7 @@ import { isGitRepoRoot, isGitRepo } from "./git.js";
 import type { AgentConfig, WorkData } from "./types.js";
 
 // ── Task body sanitization ───────────────────────────────────────
-export function sanitizeTaskBody(body: string): string {
+function sanitizeTaskBody(body: string): string {
   let cleaned = body.replace(/<!--[\s\S]*?-->/g, "");
   cleaned = cleaned.replace(/!\[([^\]]*)\]\([^)]*\)/g, "[image: $1]");
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
@@ -18,7 +18,7 @@ export function sanitizeTaskBody(body: string): string {
 }
 
 // ── Build command resolution ─────────────────────────────────────
-export function resolveBuildCmd(workspace?: string): string {
+function resolveBuildCmd(workspace?: string): string {
   if (!workspace) return "npm run build";
   const home = resolve(process.env.HOME || "/root");
   const dir = workspace.startsWith("~/") ? join(home, workspace.slice(2)) : workspace;

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as git from "./git.js";
+import { dim } from "./logging.js";
 
 export interface WorktreeInfo {
   worktreePath: string;
@@ -98,7 +99,7 @@ export function mergeWorktree(workspace: string, branch: string): MergeResult {
       return { success: true, hasConflicts: false, output: "Merged and pushed" };
     }
     if (attempt >= MAX_PUSH_RETRIES) break;
-    console.log(`[mergeWorktree] Push attempt ${attempt}/${MAX_PUSH_RETRIES} failed, retrying with fresh pull...`);
+    dim(`[mergeWorktree] Push attempt ${attempt}/${MAX_PUSH_RETRIES} failed, retrying with fresh pull...`);
     git.resetHard(workspace);
     git.pull(workspace, "origin", target);
     if (!git.merge(workspace, branch)) {

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { lota } from "./github.js";
 import * as git from "./git.js";
@@ -16,7 +16,7 @@ export function getCurrentProcess(): ChildProcess | null { return currentProcess
 export function resetBusy(): void { busy = false; }
 
 // ── Git branch merge (simple branch strategy) ───────────────────
-export function mergeBranch(workspace: string, branch: string): { success: boolean; hasConflicts: boolean; output: string } {
+function mergeBranch(workspace: string, branch: string): { success: boolean; hasConflicts: boolean; output: string } {
   // Step 1: Detect and checkout default branch (main or master)
   const defaultBranch = git.getDefaultBranch(workspace);
   if (!defaultBranch) {
