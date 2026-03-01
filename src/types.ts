@@ -13,7 +13,6 @@ export interface AgentConfig {
   githubRepo: string;
   telegramBotToken: string;
   telegramChatId: string;
-  timeout: number;
   maxRssMb: number;
   useWorktree: boolean;
 }

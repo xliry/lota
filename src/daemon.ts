@@ -4,7 +4,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, unlinkSync } from "
 import { resolve, join } from "node:path";
 import { lota, getRateLimitInfo } from "./github.js";
 import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
-import { LOG_FILE, LOG_DIR, log, ok, dim, err, out, logMemory, closeLog } from "./logging.js";
+import { LOG_FILE, LOG_DIR, log, ok, dim, err, out, logMemory, periodicGcHint, closeLog } from "./logging.js";
 import { checkForWork, refreshCommentBaselines } from "./comments.js";
 import { recoverStaleTasks, checkRuntimeStaleTasks } from "./recovery.js";
 import { runClaude, getCurrentProcess, resetBusy } from "./process.js";
@@ -102,7 +102,7 @@ function parseArgs(): AgentConfig {
   const args = process.argv.slice(2);
   let interval = 15, once = false, mcpConfig = "", model = "sonnet";
   let mode: AgentMode = "auto", maxTasksPerCycle = 1, singlePhaseOverride: boolean | null = null;
-  let timeout = 900, maxRssMb = 1024, nameOverride = "", useWorktree = false;
+  let maxRssMb = 1024, nameOverride = "", useWorktree = false;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -114,7 +114,6 @@ function parseArgs(): AgentConfig {
       case "--max-tasks": case "-t": maxTasksPerCycle = Math.max(1, parseInt(args[++i], 10)); break;
       case "--single-phase": singlePhaseOverride = true; break;
       case "--no-single-phase": singlePhaseOverride = false; break;
-      case "--timeout": timeout = parseInt(args[++i], 10); break;
       case "--max-rss": maxRssMb = parseInt(args[++i], 10); break;
       case "--name": case "-n": nameOverride = args[++i]; break;
       case "--worktree": useWorktree = true; break;
@@ -130,7 +129,6 @@ Options:
   -m, --model <model>   Claude model (default: sonnet)
   -i, --interval <sec>  Poll interval in seconds (default: 15)
   -t, --max-tasks <n>   Max tasks per execute cycle (default: 1)
-  --timeout <sec>       Claude subprocess timeout in seconds (default: 600)
   --mode <auto|supervised>  auto = direct execution, supervised = Telegram approval (default: auto)
   --single-phase        Merge plan+execute into one Claude invocation (default: on in auto mode)
   --no-single-phase     Use separate plan→approve→execute phases even in auto mode
@@ -170,7 +168,7 @@ Options:
   }
 
   const creds = loadCredentials(configPath, nameOverride);
-  return { configPath, model, interval, once, mode, singlePhase, maxTasksPerCycle, timeout, maxRssMb, useWorktree, ...creds };
+  return { configPath, model, interval, once, mode, singlePhase, maxTasksPerCycle, maxRssMb, useWorktree, ...creds };
 }
 
 // ── Shutdown ─────────────────────────────────────────────────────
@@ -333,7 +331,12 @@ async function main() {
 
   let emptyPolls = 0;
   let pollCycles = 0;
-  const MAX_INTERVAL_MULTIPLIER = 4;
+
+  const getIntervalMultiplier = (empty: number): number => {
+    if (empty < 20) return Math.min(empty, 4);    // 15s → 60s
+    if (empty < 50) return 10;                      // 150s
+    return 20;                                       // 300s (5 min)
+  };
 
   while (!stopped) {
     pollCycles++;
@@ -349,9 +352,9 @@ async function main() {
 
     if (!work) {
       emptyPolls++;
-      const nextInterval = config.interval * Math.min(emptyPolls, MAX_INTERVAL_MULTIPLIER);
+      const nextInterval = config.interval * getIntervalMultiplier(emptyPolls);
       if (emptyPolls === 1 || emptyPolls % 10 === 0) dim(`No pending work (${emptyPolls} checks) — next in ${nextInterval}s`);
-      if (pollCycles % 10 === 0) { logMemory("Periodic", config); await checkRuntimeStaleTasks(config); }
+      if (pollCycles % 10 === 0) { logMemory("Periodic", config); periodicGcHint(); await checkRuntimeStaleTasks(config); }
       if (config.once) break;
       await sleep(nextInterval);
       continue;

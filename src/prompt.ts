@@ -124,7 +124,7 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     "  - Token file: ~/lota/.github-token (for git push auth).",
     `  - Run \`${buildCmd}\` before pushing. Fix errors before committing.`,
     `  - Make ONE focused commit: "feat: description (#${t.id})"`,
-    "  - Do NOT use TodoWrite or Agent tool.",
+    "  - Do NOT use TodoWrite tool. USE the Agent tool for parallel subtasks when the task is large.",
     "  - Do NOT re-read the task via lota API. The task body is below.",
     "  - Do NOT post plan comments. Your commit is the audit trail.",
     "  - If push gets 403, report as comment and stop.",

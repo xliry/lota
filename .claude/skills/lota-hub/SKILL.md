@@ -141,53 +141,50 @@ Then:
 - Only ask for clarification if genuinely ambiguous
 - Keep the body detailed but the title short
 
-## Creating Multiple Tasks (Dependency-Aware Distribution)
+## Workspace Conflict Check
 
-When the user asks to create **multiple tasks at once** (e.g., "13 task oluştur", "create 5 tasks"):
+**Before creating any task**, check if the target workspace already has an active task (assigned, approved, or in-progress):
+
+```
+mcp__lota__lota GET /sync?all=true
+```
+
+Look through `assigned`, `approved`, and `in_progress` arrays for tasks with the same `workspace` field.
+
+**If conflict found**, warn the user:
+> "lota-1 is already working on ~/project-a/ (task #42). Assigning another agent to the same workspace will cause git conflicts."
+> "Options: wait for #42 to finish, or assign to the same agent (lota-1)."
+
+**Do NOT create a task for a different agent on an occupied workspace.** This is a hard rule.
+
+## Creating Multiple Tasks (1 Agent Per Workspace)
+
+**Core rule: 1 workspace = 1 task (all phases) = 1 agent.** Never split phases of the same workspace across multiple agents or tasks. Each agent owns its workspace end-to-end.
+
+When the user asks to create **multiple tasks** (e.g., "3 projeye task ver"):
 
 1. **Discover alive agents** (see Agent Discovery section above)
-2. **Parse dependencies**: If a task depends on another, note it
-3. **Group by workspace**: Tasks targeting the same workspace must be serialized
-4. **Wave analysis** (two sources of dependency):
-   - **Explicit dependencies**: user-specified `depends_on`
-   - **Workspace serialization**: tasks in the same workspace form a chain
-     - Within each workspace, only the FIRST task is Wave 0
-     - Subsequent tasks depend on the previous one in that workspace
-   - **Different workspaces**: fully parallel, no implicit dependency
-5. **Round-robin only Wave 0** across agents
-6. **Show distribution before creating** (confirm once if count > 5):
+2. **Check workspace conflicts** (see above) — skip occupied workspaces or assign to the same agent
+3. **Create ONE task per workspace** — include ALL phases/requirements in a single task body
+4. **Round-robin assign** across available agents (least-loaded first)
+5. **Show distribution before creating** (confirm once):
    ```
-   Creating 6 tasks across 3 agents:
+   Creating 3 tasks across 3 agents:
 
-     ~/kid-club-vue (serialized — 3 tasks):
-       Wave 0: #200 "Scaffold project"        → lota-1 (assigned)
-       Wave 1: #201 "Create Pinia store"       → lota-2 (blocked, depends on #200)
-       Wave 2: #202 "Build layout system"      → lota-3 (blocked, depends on #201)
+     #200  ~/project-a  "Full app build"       → lota-1
+     #201  ~/project-b  "Redesign homepage"   → lota-2
+     #202  ~/project-c  "Fix recovery loop"   → lota-3
 
-     ~/bosphorus (serialized — 2 tasks):
-       Wave 0: #203 "Update About page"        → lota-2 (assigned)
-       Wave 1: #204 "Add contact form"         → lota-1 (blocked, depends on #203)
-
-     ~/lota (1 task):
-       Wave 0: #205 "Fix recovery loop"        → lota-3 (assigned)
-
-   Immediate: 3 tasks (Wave 0)
-   Blocked:   3 tasks (auto-unblock when deps complete)
+   Each agent owns their workspace — all phases included.
    ```
-7. **Create Wave 0 tasks** normally (they get `status:assigned`):
+6. **Create tasks**:
    ```
-   lota("POST", "/tasks", {"title": "...", "assign": "lota-1", "priority": "medium", "body": "...", "workspace": "~/kid-club-vue"})
+   lota("POST", "/tasks", {"title": "...", "assign": "lota-1", "priority": "high", "body": "...", "workspace": "~/project-a"})
    ```
-8. **Create Wave 1+ tasks** with `depends_on` (they get `status:blocked` automatically):
-   ```
-   lota("POST", "/tasks", {"title": "...", "assign": "lota-2", "body": "...\n\n## Depends on\n- #200", "depends_on": [200], "workspace": "~/kid-club-vue"})
-   ```
-   Note: `depends_on` is stored in metadata. The human-readable "## Depends on" section in body is for visibility.
-9. **After all created**, show the summary with workspace grouping.
 
-**Key rule: ONE task per workspace at a time.** Tasks in different workspaces run in parallel. Tasks in the same workspace run sequentially via `depends_on` chains. The daemon auto-unblocks the next task when the previous one completes.
+**Why not split phases?** Performance test (2026-03-01) proved solo agents are faster — no git conflicts, no idle waiting, no handoff overhead. Agent reads code, plans, builds, tests, and delivers in one flow.
 
-If only 1 agent alive, all tasks go to that agent (no distribution needed).
+If only 1 agent alive, all tasks go to that agent sequentially.
 
 ## Rebalance Tasks
 

@@ -69,15 +69,17 @@ export function createWorktree(
  * 4. If rebase also conflicts → true conflict, needs manual resolution
  */
 export function mergeWorktree(workspace: string, branch: string): MergeResult {
+  const target = git.getDefaultBranch(workspace) || "main";
   const didStash = git.stash(workspace);
-  git.pull(workspace);
+  git.checkout(workspace, target);
+  git.pull(workspace, "origin", target);
 
   if (!git.merge(workspace, branch)) {
     const hadConflicts = git.hasConflicts(workspace);
     git.mergeAbort(workspace);
 
     if (hadConflicts) {
-      const rebaseResult = tryRebaseThenMerge(workspace, branch);
+      const rebaseResult = tryRebaseThenMerge(workspace, branch, target);
       if (rebaseResult) {
         if (didStash) git.stashPop(workspace);
         return rebaseResult;
@@ -88,17 +90,17 @@ export function mergeWorktree(workspace: string, branch: string): MergeResult {
     return { success: false, hasConflicts: hadConflicts, output: "Merge failed" };
   }
 
-  // Push merged main branch to origin — retry up to 3 times on race condition
+  // Push merged branch to origin — retry up to 3 times on race condition
   const MAX_PUSH_RETRIES = 3;
   for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
-    if (git.push(workspace)) {
+    if (git.push(workspace, `origin ${target}`)) {
       if (didStash) git.stashPop(workspace);
       return { success: true, hasConflicts: false, output: "Merged and pushed" };
     }
     if (attempt >= MAX_PUSH_RETRIES) break;
     console.log(`[mergeWorktree] Push attempt ${attempt}/${MAX_PUSH_RETRIES} failed, retrying with fresh pull...`);
     git.resetHard(workspace);
-    git.pull(workspace);
+    git.pull(workspace, "origin", target);
     if (!git.merge(workspace, branch)) {
       git.mergeAbort(workspace);
       if (didStash) git.stashPop(workspace);
@@ -118,7 +120,7 @@ export function mergeWorktree(workspace: string, branch: string): MergeResult {
  * Attempt to rebase a task branch onto latest main and then fast-forward merge.
  * Returns MergeResult on success/push-failure, or null if rebase itself conflicts.
  */
-function tryRebaseThenMerge(workspace: string, branch: string): MergeResult | null {
+function tryRebaseThenMerge(workspace: string, branch: string, target = "main"): MergeResult | null {
   // Find the worktree directory that has this branch checked out
   const listOut = git.worktreeList(workspace);
   let worktreePath: string | null = null;
@@ -131,8 +133,8 @@ function tryRebaseThenMerge(workspace: string, branch: string): MergeResult | nu
   }
   if (!worktreePath || !existsSync(worktreePath)) return null;
 
-  // Rebase the task branch on latest main
-  if (!git.rebase(worktreePath, "main")) {
+  // Rebase the task branch on latest default branch
+  if (!git.rebase(worktreePath, target)) {
     git.rebaseAbort(worktreePath);
     return null;
   }

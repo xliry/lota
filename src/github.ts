@@ -161,9 +161,14 @@ function formatMetadata(type: string, data: Record<string, unknown>, humanText: 
 }
 
 function parseBodyMeta(body: string): Record<string, unknown> {
-  // Try versioned first
-  const vMatch = body.match(new RegExp(`<!-- lota:${META_VERSION}:meta (\\{.*?\\}) -->`, "s"));
-  if (vMatch) { try { return JSON.parse(vMatch[1]); } catch { /* malformed metadata — skip */ } }
+  // Try versioned first — merge ALL matches (handles duplicate meta tags)
+  const vRe = new RegExp(`<!-- lota:${META_VERSION}:meta (\\{.*?\\}) -->`, "gs");
+  let merged: Record<string, unknown> = {};
+  let match;
+  while ((match = vRe.exec(body)) !== null) {
+    try { merged = { ...merged, ...JSON.parse(match[1]) }; } catch { /* malformed metadata — skip */ }
+  }
+  if (Object.keys(merged).length) return merged;
   // Fallback legacy
   const m = body.match(/<!-- lota:meta (\{.*?\}) -->/s);
   if (!m) return {};
@@ -253,7 +258,10 @@ async function createTask(body: Record<string, unknown>): Promise<unknown> {
   if (workspace) meta.workspace = workspace;
   if (depends_on?.length) meta.depends_on = depends_on;
   if (Object.keys(meta).length) {
-    finalBody += `\n\n<!-- lota:${META_VERSION}:meta ${JSON.stringify(meta)} -->`;
+    // Merge with any existing meta in the body (avoid duplicate meta tags)
+    const existingMeta = parseBodyMeta(finalBody);
+    const mergedMeta = { ...existingMeta, ...meta };
+    finalBody = replaceBodyMeta(finalBody, mergedMeta);
   }
   return await gh(`/repos/${repo()}/issues`, {
     method: "POST",

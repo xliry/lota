@@ -28,6 +28,7 @@ interface BaselineEntry {
 }
 
 export const lastSeenComments = new Map<number, number>();
+let baselinesDirty = false;
 
 // ── Baseline persistence ─────────────────────────────────────────
 export function loadCommentBaselines(): void {
@@ -49,6 +50,7 @@ export function loadCommentBaselines(): void {
 }
 
 export function saveCommentBaselines(): void {
+  if (!baselinesDirty) return;
   try {
     const now = Date.now();
     const cutoff = now - SEVEN_DAYS_MS;
@@ -70,6 +72,7 @@ export function saveCommentBaselines(): void {
     const tmpFile = BASELINES_FILE + ".tmp";
     writeFileSync(tmpFile, JSON.stringify(data, null, 2));
     renameSync(tmpFile, BASELINES_FILE);
+    baselinesDirty = false;
   } catch (e) {
     dim(`[non-critical] saveCommentBaselines: ${(e as Error).message}`);
   }
@@ -80,6 +83,7 @@ export async function refreshCommentBaselines(taskIds: number[]): Promise<void> 
     try {
       const task = await lota("GET", `/tasks/${id}`) as { comments?: unknown[] };
       lastSeenComments.set(id, task.comments?.length ?? 0);
+      baselinesDirty = true;
     } catch (e) {
       dim(`[non-critical] refreshCommentBaselines failed for task #${id}: ${(e as Error).message}`);
     }
@@ -98,6 +102,7 @@ function detectCommentUpdates(
     const currentCount = task.comment_count ?? 0;
     if (lastSeen === -1) {
       lastSeenComments.set(task.id, currentCount);
+      baselinesDirty = true;
       if (firstSeen) continue; // don't trigger on first sight
     } else if (currentCount > lastSeen) {
       updates.push({
@@ -107,6 +112,7 @@ function detectCommentUpdates(
         new_comment_count: currentCount - lastSeen,
       });
       lastSeenComments.set(task.id, currentCount);
+      baselinesDirty = true;
     }
   }
   return updates;
@@ -154,7 +160,10 @@ export async function checkForWork(config: AgentConfig): Promise<WorkData | null
   // Clean up tracking for tasks no longer active
   const activeIds = new Set([...inProgress.map(t => t.id), ...recentlyCompleted.map(t => t.id)]);
   for (const id of lastSeenComments.keys()) {
-    if (!activeIds.has(id)) lastSeenComments.delete(id);
+    if (!activeIds.has(id)) {
+      lastSeenComments.delete(id);
+      baselinesDirty = true;
+    }
   }
 
   saveCommentBaselines();

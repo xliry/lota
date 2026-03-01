@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { lota } from "./github.js";
 import * as git from "./git.js";
+import { isGitRepoRoot } from "./git.js";
 import { createWorktree, mergeWorktree, cleanupWorktree, type WorktreeInfo } from "./worktree.js";
 import { log, ok, dim, err, formatEvent, writeToLog } from "./logging.js";
 import { buildPrompt, resolveWorkspace } from "./prompt.js";
@@ -16,13 +17,19 @@ export function resetBusy(): void { busy = false; }
 
 // ── Git branch merge (simple branch strategy) ───────────────────
 export function mergeBranch(workspace: string, branch: string): { success: boolean; hasConflicts: boolean; output: string } {
-  // Step 1: Checkout main/master
-  if (!git.checkout(workspace, "main")) {
-    git.checkout(workspace, "master");
+  // Step 1: Detect and checkout default branch (main or master)
+  const defaultBranch = git.getDefaultBranch(workspace);
+  if (!defaultBranch) {
+    err(`No default branch (main/master) found in ${workspace}`);
+    return { success: false, hasConflicts: false, output: "No default branch found" };
+  }
+
+  if (!git.checkout(workspace, defaultBranch)) {
+    return { success: false, hasConflicts: false, output: `Failed to checkout ${defaultBranch}` };
   }
 
   // Step 2: Pull latest
-  git.pull(workspace, "origin", "main");
+  git.pull(workspace, "origin", defaultBranch);
 
   // Step 3: Merge the branch
   if (!git.merge(workspace, branch)) {
@@ -33,10 +40,16 @@ export function mergeBranch(workspace: string, branch: string): { success: boole
     return { success: false, hasConflicts: false, output: "" };
   }
 
-  // Step 4: Push with retry (pull to rebase on conflict, then retry)
+  // Step 4: Push with retry
+  let pushed = false;
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (git.push(workspace, "origin main")) break;
-    if (attempt < 2) git.pull(workspace, "origin", "main");
+    if (git.push(workspace, `origin ${defaultBranch}`)) { pushed = true; break; }
+    if (attempt < 2) git.pull(workspace, "origin", defaultBranch);
+  }
+
+  if (!pushed) {
+    err(`Failed to push ${defaultBranch} after 3 attempts`);
+    return { success: false, hasConflicts: false, output: `Push to ${defaultBranch} failed` };
   }
 
   // Step 5: Cleanup branch
@@ -113,6 +126,11 @@ function setupBranchStrategy(config: AgentConfig, work: WorkData, workingDir: st
     return { claudeCwd: workingDir, worktreeInfo: null, defaultBranch: null };
   }
 
+  if (!isGitRepoRoot(workingDir)) {
+    dim(`Workspace ${workingDir} is not a git repo root — skipping branch strategy`);
+    return { claudeCwd: workingDir, worktreeInfo: null, defaultBranch: null };
+  }
+
   if (config.useWorktree) {
     const worktreeInfo = createWorktree(workingDir, config.agentName, work.tasks[0].id);
     if (worktreeInfo) {
@@ -163,6 +181,10 @@ function handlePostCompletion(
   }
 
   if (defaultBranch && code === 0) {
+    if (!isGitRepoRoot(workingDir)) {
+      dim(`Skipping merge — workspace is not a git repo root: ${workingDir}`);
+      return;
+    }
     log(`Merging branch ${defaultBranch} back to main...`);
     const result = mergeBranch(workingDir, defaultBranch);
     if (result.success) {
@@ -179,41 +201,6 @@ function handlePostCompletion(
       err(`Merge/push failed: ${result.output.slice(0, 200)}`);
     }
   }
-}
-
-// ── Timeout handler ──────────────────────────────────────────────
-function setupTimeoutHandler(
-  child: ChildProcess,
-  config: AgentConfig,
-  work: WorkData,
-  worktreeInfo: WorktreeInfo | null,
-  resolve: (code: number) => void,
-): { killTimer: ReturnType<typeof setTimeout>; killedRef: { value: boolean } } {
-  const killedRef = { value: false };
-  const killTimer = setTimeout(() => {
-    killedRef.value = true;
-    err(`Claude process timed out after ${config.timeout}s — killed`);
-    child.kill("SIGTERM");
-    const forceKill = setTimeout(() => {
-      if (currentProcess === child) child.kill("SIGKILL");
-    }, 5000);
-    forceKill.unref();
-
-    for (const taskId of work.tasks.map(t => t.id)) {
-      lota("POST", `/tasks/${taskId}/comment`, {
-        content: `⚠️ **Agent timeout**: Claude subprocess was killed after ${config.timeout}s without completing. The task will be retried on the next cycle.`,
-      }).catch(e => dim(`Comment failed for task #${taskId}: ${(e as Error).message}`));
-      lota("POST", `/tasks/${taskId}/status`, { status: "assigned" }).catch(e => dim(`Status reset failed for task #${taskId}: ${(e as Error).message}`));
-    }
-    if (worktreeInfo) {
-      try { cleanupWorktree(worktreeInfo.originalWorkspace, config.agentName, worktreeInfo.branch); } catch (e) { dim(`[non-critical] worktree cleanup failed: ${(e as Error).message}`); }
-    }
-    currentProcess = null;
-    busy = false;
-    resolve(1);
-  }, config.timeout * 1000);
-  killTimer.unref();
-  return { killTimer, killedRef };
 }
 
 // ── Main Claude subprocess ───────────────────────────────────────
@@ -256,8 +243,6 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
     const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"], cwd: claudeCwd, env: cleanEnv });
     currentProcess = child;
 
-    const { killTimer, killedRef } = setupTimeoutHandler(child, config, work, worktreeInfo, resolve);
-
     let jsonBuffer = "";
     child.stdout?.on("data", (d: Buffer) => {
       jsonBuffer += d.toString();
@@ -277,8 +262,6 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
     });
 
     child.on("close", (code) => {
-      if (killedRef.value) return;
-      clearTimeout(killTimer);
       currentProcess = null;
       busy = false;
       handlePostCompletion(code ?? 1, work, worktreeInfo, defaultBranch, workingDir, config);
@@ -286,8 +269,6 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
     });
 
     child.on("error", (e) => {
-      if (killedRef.value) return;
-      clearTimeout(killTimer);
       currentProcess = null;
       busy = false;
       if ((e as NodeJS.ErrnoException).code === "ENOENT") {

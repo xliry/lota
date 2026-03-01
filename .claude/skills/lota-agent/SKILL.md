@@ -252,6 +252,9 @@ Default to **auto** if user doesn't specify or skips.
 
 Before spawning agents, distribute assigned tasks round-robin. **Same workspace = sequential chain** to prevent conflicts.
 
+**IMPORTANT: Skip redistribution if tasks are already assigned to specific agents.**
+Check each task's `assignee` field. If it's already `lota-1`, `lota-2`, `lota-3`, etc. (not just `lota`), the Hub has already distributed this task — do NOT reassign it. Only redistribute tasks assigned to the generic `lota` agent.
+
 If agent count is 1:
 - Skip distribution (all tasks stay labeled `agent:lota-1`)
 - Just rename the single agent `lota-1`
@@ -261,15 +264,16 @@ If agent count > 1:
    ```
    mcp__lota__lota GET /tasks?status=assigned
    ```
-2. **Group by workspace**. Within each workspace, only the first task stays `assigned` — the rest become `blocked` with `depends_on` chaining to the previous task.
-3. Distribute Wave 0 tasks (first task per workspace) round-robin across agents:
+2. **Check assignees first.** If a task's `assignee` is already a numbered agent (e.g. `lota-1`, `lota-2`), leave it as-is. Only collect tasks assigned to generic `lota` for redistribution.
+3. **Group unassigned tasks by workspace**. Within each workspace, only the first task stays `assigned` — the rest become `blocked` with `depends_on` chaining to the previous task.
+4. Distribute Wave 0 tasks (first task per workspace) round-robin across agents:
    ```
    mcp__lota__lota POST /tasks/{id}/assign  {"agent": "lota-N"}
    ```
-4. Log distribution clearly:
+5. Log distribution clearly:
    > "Distributing tasks:
-   > - Task #42 (~/project-a) → lota-1
-   > - Task #43 (~/project-b) → lota-2
+   > - Task #42 (~/project-a) → lota-1 (already assigned by Hub)
+   > - Task #43 (~/project-b) → lota-2 (redistributed)
    > - Task #44 (~/project-a) → blocked (depends on #42)
    > - Task #45 (~/project-b) → blocked (depends on #43)"
 

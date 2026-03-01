@@ -15,10 +15,18 @@ export function gitExec(cmd: string, cwd: string): { ok: boolean; output: string
 
 // ── State query functions ─────────────────────────────────────────
 
-/** Check if a directory is a git repository. */
+/** Check if a directory is inside a git repository. */
 export function isGitRepo(dir: string): boolean {
   const r = gitExec("git rev-parse --git-dir", dir);
   return r.ok;
+}
+
+/** Check if a directory is the root of its own git repository (has .git). */
+export function isGitRepoRoot(dir: string): boolean {
+  const r = gitExec("git rev-parse --show-toplevel", dir);
+  if (!r.ok) return false;
+  // Normalize both paths for comparison
+  return r.output.trim().replace(/\/+$/, "") === dir.replace(/\/+$/, "");
 }
 
 /** Check if a local branch exists. */
@@ -158,6 +166,19 @@ export function worktreeRemove(cwd: string, path: string): boolean {
   const r = gitExec(`git worktree remove "${path}" --force`, cwd);
   if (!r.ok) dim(`[git] worktree remove "${path}" failed: ${r.output.slice(0, 120)}`);
   return r.ok;
+}
+
+/** Detect the default branch name (main, master, or null). Checks local branches first, then remote. */
+export function getDefaultBranch(cwd: string): string | null {
+  if (branchExists(cwd, "main")) return "main";
+  if (branchExists(cwd, "master")) return "master";
+  // Check remote tracking
+  const r = gitExec("git remote show origin", cwd);
+  if (r.ok) {
+    const match = r.output.match(/HEAD branch:\s*(\S+)/);
+    if (match) return match[1];
+  }
+  return null;
 }
 
 /** Prune stale worktree entries. Returns true on success. */

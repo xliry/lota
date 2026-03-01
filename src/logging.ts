@@ -76,6 +76,23 @@ export const ok = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[32m
 export const dim = (msg: string) => out(`${PRE} \x1b[90m${time()} ${msg}\x1b[0m`, `[${time()}] ${msg}`);
 export const err = (msg: string) => out(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${msg}\x1b[0m`, `[${time()}] ✗ ${msg}`);
 
+// ── Periodic GC hint ──────────────────────────────────────────────
+let lastGcTime = Date.now();
+const GC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+export function periodicGcHint(): void {
+  const now = Date.now();
+  if (now - lastGcTime < GC_INTERVAL_MS) return;
+  lastGcTime = now;
+  const maybeGc = (global as { gc?: () => void }).gc;
+  if (typeof maybeGc === "function") {
+    const before = Math.round(process.memoryUsage().heapUsed / BYTES_PER_MB);
+    maybeGc();
+    const after = Math.round(process.memoryUsage().heapUsed / BYTES_PER_MB);
+    dim(`Periodic GC: freed ${before - after}MB (heap ${before}→${after}MB)`);
+  }
+}
+
 // ── Memory monitoring ────────────────────────────────────────────
 export function logMemory(label: string, config: AgentConfig): void {
   const mem = process.memoryUsage();
