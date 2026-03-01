@@ -867,55 +867,6 @@ function resolveWorkspace(work: WorkData): string {
   return process.cwd();
 }
 
-// ── Build verification ──────────────────────────────────────────
-
-function verifyBuild(workspace: string): Promise<{ success: boolean; output: string }> {
-  // Check if package.json has a build script
-  const pkgPath = join(workspace, "package.json");
-  let hasBuildScript = false;
-  if (existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      if (pkg.scripts?.build) hasBuildScript = true;
-    } catch (e) { dim(`[non-critical] failed to parse package.json at ${pkgPath}: ${(e as Error).message}`); }
-  }
-
-  if (!hasBuildScript) {
-    dim("No build script in package.json — verification skipped");
-    return Promise.resolve({ success: true, output: "No build script found — skipped" });
-  }
-
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    const child = spawn("npm", ["run", "build"], {
-      cwd: workspace,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      resolve({ success: false, output: "Build timed out (2 min)" });
-    }, 120_000);
-
-    child.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
-
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve({ success: true, output: stdout.slice(-500) });
-      } else {
-        resolve({ success: false, output: (stderr || stdout || "Unknown build error").slice(-BUILD_OUTPUT_TRUNCATE) });
-      }
-    });
-
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      resolve({ success: false, output: e.message });
-    });
-  });
-}
 
 // ── Claude subprocess ───────────────────────────────────────────
 
@@ -1378,26 +1329,6 @@ async function main() {
 
       if (code === 0) {
         ok(`${work.phase} phase complete in ${elapsed}s`);
-
-        // Post-execution build verification
-        if (work.phase === "execute" || work.phase === "single") {
-          const ws = resolveWorkspace(work);
-          const build = await verifyBuild(ws);
-          if (build.success) {
-            ok(`Build verification passed`);
-          } else {
-            err(`Build verification FAILED`);
-            err(build.output.slice(0, 300));
-            // Post warning comment on the task(s)
-            for (const t of work.tasks) {
-              try {
-                await lota("POST", `/tasks/${t.id}/comment`, {
-                  content: `⚠️ **Post-execution build verification failed**\n\n\`\`\`\n${build.output.slice(0, 500)}\n\`\`\`\n\nThe daemon detected a build failure after the agent completed. Manual review needed.`,
-                });
-              } catch (e) { err(`Failed to post build warning comment on task #${t.id}: ${(e as Error).message}`); }
-            }
-          }
-        }
 
         // AUTO: after plan phase (when --no-single-phase is set), auto-approve and continue to execute
         if (config.mode === "auto" && phase === "plan") {
