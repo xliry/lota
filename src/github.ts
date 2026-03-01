@@ -496,6 +496,14 @@ export async function lota(method: string, path: string, body?: Record<string, u
   const id = idMatch ? Number(idMatch[1]) : undefined;
   const endpoint = pathname.replace(/\/tasks\/\d+/, "/tasks/:id");
 
+  // Detect UUID-style IDs (from orchestrator or other systems) and give a clear error
+  if (/\/tasks\/[0-9a-f-]{20,}/.test(pathname) && !id) {
+    throw Object.assign(
+      new Error(`Invalid task ID: Lota uses numeric GitHub Issue IDs (e.g. /tasks/42), not UUIDs. Got: ${pathname}`),
+      { code: "LOTA_INVALID_TASK_ID" }
+    );
+  }
+
   switch (`${method} ${endpoint}`) {
     case "GET /sync":              return sync(query);
     case "GET /tasks":             return getTasks(query);
