@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { err, dim } from "./logging.js";
+import { isGitRepoRoot, isGitRepo } from "./git.js";
 import type { AgentConfig, WorkData } from "./types.js";
 
 // ── Task body sanitization ───────────────────────────────────────
@@ -50,13 +51,25 @@ export function resolveWorkspace(work: WorkData): string {
       return process.cwd();
     }
     const candidate = resolve(expanded);
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) {
+      warnIfNotGitRoot(candidate);
+      return candidate;
+    }
     return process.cwd();
   }
 
   const candidate = resolve(home, expanded);
-  if (existsSync(candidate)) return candidate;
+  if (existsSync(candidate)) {
+    warnIfNotGitRoot(candidate);
+    return candidate;
+  }
   return process.cwd();
+}
+
+function warnIfNotGitRoot(dir: string): void {
+  if (isGitRepo(dir) && !isGitRepoRoot(dir)) {
+    dim(`Workspace ${dir} is inside a parent git repo — branch/merge strategy will be skipped`);
+  }
 }
 
 // ── Prompt builder ───────────────────────────────────────────────
@@ -111,7 +124,7 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     "  - Token file: ~/lota/.github-token (for git push auth).",
     `  - Run \`${buildCmd}\` before pushing. Fix errors before committing.`,
     `  - Make ONE focused commit: "feat: description (#${t.id})"`,
-    "  - Do NOT use TodoWrite, Agent tool, or Task tool.",
+    "  - Do NOT use TodoWrite or Agent tool.",
     "  - Do NOT re-read the task via lota API. The task body is below.",
     "  - Do NOT post plan comments. Your commit is the audit trail.",
     "  - If push gets 403, report as comment and stop.",
