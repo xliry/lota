@@ -27,7 +27,12 @@ export async function tgSend(config: TelegramConfig, text: string, inlineKeyboar
   if (inlineKeyboard) {
     body.reply_markup = { inline_keyboard: inlineKeyboard };
   }
-  return await tgApi(config.telegramBotToken, "sendMessage", body);
+  try {
+    return await tgApi(config.telegramBotToken, "sendMessage", body);
+  } catch (e) {
+    console.error(`Telegram send failed: ${(e as Error).message}`);
+    return null;
+  }
 }
 
 export async function tgSetupChatId(config: TelegramConfig): Promise<string> {
