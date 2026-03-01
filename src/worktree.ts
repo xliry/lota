@@ -132,15 +132,42 @@ export function mergeWorktree(workspace: string, branch: string): MergeResult {
       stdio: "pipe",
     });
 
-    // Push merged main branch to origin
-    try {
-      execSync("git push origin HEAD", { cwd: workspace, stdio: "pipe" });
-    } catch (pushErr) {
+    // Push merged main branch to origin — retry up to 3 times on race condition
+    const MAX_PUSH_RETRIES = 3;
+    let pushSuccess = false;
+    let lastPushError = "";
+    for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
+      try {
+        execSync("git push origin HEAD", { cwd: workspace, stdio: "pipe" });
+        pushSuccess = true;
+        break;
+      } catch (pushErr) {
+        lastPushError = (pushErr as Error).message;
+        if (attempt >= MAX_PUSH_RETRIES) break;
+        console.log(`[mergeWorktree] Push attempt ${attempt}/${MAX_PUSH_RETRIES} failed, retrying with fresh pull...`);
+        // Undo merge, pull latest main, re-merge, then retry push
+        try {
+          execSync("git reset --hard HEAD~1", { cwd: workspace, stdio: "pipe" });
+          execSync("git pull --ff-only origin main", { cwd: workspace, stdio: "pipe" });
+          execSync(`git merge "${branch}" --no-edit`, { cwd: workspace, stdio: "pipe" });
+        } catch (retryErr) {
+          // Re-merge failed (e.g. conflict after pull) — abort and give up
+          try { execSync("git merge --abort", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
+          if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
+          return {
+            success: false,
+            hasConflicts: true,
+            output: `Push retry ${attempt}: re-merge after pull failed — ${(retryErr as Error).message}`,
+          };
+        }
+      }
+    }
+    if (!pushSuccess) {
       if (didStash) try { execSync("git stash pop", { cwd: workspace, stdio: "pipe" }); } catch { /* ignore */ }
       return {
         success: false,
         hasConflicts: false,
-        output: `Merge succeeded but push failed: ${(pushErr as Error).message}`,
+        output: `Push failed after ${MAX_PUSH_RETRIES} attempts: ${lastPushError}`,
       };
     }
 
