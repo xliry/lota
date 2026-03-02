@@ -5,7 +5,7 @@ import { lota } from "./github.js";
 import * as git from "./git.js";
 import { isGitRepoRoot } from "./git.js";
 import { createWorktree, mergeWorktree, cleanupWorktree, type WorktreeInfo } from "./worktree.js";
-import { log, ok, dim, err, formatEvent, writeToLog } from "./logging.js";
+import { log, ok, dim, err, logNonCritical, formatEvent, writeToLog } from "./logging.js";
 import { buildPrompt, resolveWorkspace } from "./prompt.js";
 import type { AgentConfig, WorkData } from "./types.js";
 
@@ -80,8 +80,8 @@ function setupGitIdentity(env: NodeJS.ProcessEnv, config: AgentConfig): void {
 
 function writeTokenFile(config: AgentConfig): void {
   const tokenFile = join(process.env.HOME || "/root", "lota", ".github-token");
-  try { writeFileSync(tokenFile, config.githubToken, { mode: 0o600 }); }
-  catch (e) { dim(`[non-critical] failed to write token file: ${(e as Error).message}`); }
+  try { writeFileSync(tokenFile, config.ghAuth, { mode: 0o600 }); }
+  catch (e) { logNonCritical("write token file", e); }
 }
 
 // ── Claude settings merge ────────────────────────────────────────
@@ -96,7 +96,7 @@ function mergeClaudeSettings(settingsFile: string, withDeny = false): void {
     mkdirSync(dirname(settingsFile), { recursive: true });
     let existing: Record<string, unknown> = {};
     try { existing = JSON.parse(readFileSync(settingsFile, "utf-8")); }
-    catch (e) { dim(`[non-critical] failed to read ${settingsFile}: ${(e as Error).message}`); }
+    catch (e) { logNonCritical(`read ${settingsFile}`, e); }
 
     const perms = existing.permissions as { allow?: string[]; deny?: string[] } || {};
     const mergedAllow = [...new Set([...(perms.allow || []), ...REQUIRED_PERMISSIONS])];
@@ -110,7 +110,7 @@ function mergeClaudeSettings(settingsFile: string, withDeny = false): void {
     };
     writeFileSync(settingsFile, JSON.stringify(merged, null, 2) + "\n");
   } catch (e) {
-    dim(`[non-critical] failed to write Claude settings to ${settingsFile}: ${(e as Error).message}`);
+    logNonCritical(`write Claude settings to ${settingsFile}`, e);
   }
 }
 
@@ -210,7 +210,7 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
 
   return new Promise((resolve) => {
     const cleanEnv = cleanEnvironment();
-    cleanEnv.GITHUB_TOKEN = config.githubToken;
+    cleanEnv.GITHUB_TOKEN = config.ghAuth;
     cleanEnv.GITHUB_REPO = config.githubRepo;
     cleanEnv.AGENT_NAME = config.agentName;
     setupGitIdentity(cleanEnv, config);
@@ -250,8 +250,12 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
       jsonBuffer = lines.pop() || "";
       for (const line of lines) {
         if (!line.trim()) continue;
-        try { formatEvent(JSON.parse(line)); }
-        catch { console.log(`  ${line}`); writeToLog(`  ${line}\n`); }
+        try {
+          formatEvent(JSON.parse(line));
+        } catch {
+          console.log(`  ${line}`);
+          writeToLog(`  ${line}\n`);
+        }
       }
     });
 

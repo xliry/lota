@@ -3,7 +3,7 @@ import { resolve, join } from "node:path";
 import { lota } from "./github.js";
 import { cleanStaleWorktrees } from "./worktree.js";
 import { tgSend } from "./telegram.js";
-import { log, ok, dim, err } from "./logging.js";
+import { log, ok, dim, err, logNonCritical } from "./logging.js";
 import type { AgentConfig } from "./types.js";
 
 const MS_PER_MINUTE = 60_000;
@@ -23,7 +23,7 @@ async function safeLota(method: string, path: string, body?: Record<string, unkn
 
 // ── Startup recovery ─────────────────────────────────────────────
 export async function recoverStaleTasks(config: AgentConfig): Promise<void> {
-  process.env.GITHUB_TOKEN = config.githubToken;
+  process.env.GITHUB_TOKEN = config.ghAuth;
   process.env.GITHUB_REPO = config.githubRepo;
   process.env.AGENT_NAME = config.agentName;
 
@@ -102,7 +102,7 @@ async function recoverOrFailTask(
     : details.workspace;
   if (existsSync(wsPath)) {
     try { cleanStaleWorktrees(wsPath); dim(`  Cleaned stale worktrees for workspace: ${wsPath}`); }
-    catch (e) { dim(`[non-critical] stale worktree cleanup failed for ${wsPath}: ${(e as Error).message}`); }
+    catch (e) { logNonCritical(`stale worktree cleanup for ${wsPath}`, e); }
   }
 }
 

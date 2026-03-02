@@ -120,7 +120,11 @@ async function githubFetch(path: string, opts: RequestInit = {}): Promise<unknow
         );
       }
 
-      try { return JSON.parse(text); } catch { return text; }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
     } catch (e) {
       lastError = e as Error;
       // Only retry on network errors, not on 4xx
@@ -141,13 +145,21 @@ function parseMetadata(body: string, type: string): Record<string, unknown> | nu
   const vRe = new RegExp(`<!-- lota:${META_VERSION}:${type} (\\{.*?\\}) -->`, "s");
   const vMatch = body.match(vRe);
   if (vMatch) {
-    try { return JSON.parse(vMatch[1]); } catch { /* malformed metadata — skip */ }
+    try {
+      return JSON.parse(vMatch[1]) as Record<string, unknown>;
+    } catch {
+      // malformed metadata — skip
+    }
   }
   // Fallback: legacy format <!-- lota:plan {...} -->
   const re = new RegExp(`<!-- lota:${type} (\\{.*?\\}) -->`, "s");
   const m = body.match(re);
   if (!m) return null;
-  try { return JSON.parse(m[1]); } catch { return null; }
+  try {
+    return JSON.parse(m[1]) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function formatMetadata(type: string, data: Record<string, unknown>, humanText: string): string {
@@ -160,13 +172,21 @@ function parseBodyMeta(body: string): Record<string, unknown> {
   let merged: Record<string, unknown> = {};
   let match;
   while ((match = vRe.exec(body)) !== null) {
-    try { merged = { ...merged, ...JSON.parse(match[1]) }; } catch { /* malformed metadata — skip */ }
+    try {
+      merged = { ...merged, ...JSON.parse(match[1]) as Record<string, unknown> };
+    } catch {
+      // malformed metadata — skip
+    }
   }
   if (Object.keys(merged).length) return merged;
   // Fallback legacy
   const m = body.match(/<!-- lota:meta (\{.*?\}) -->/s);
   if (!m) return {};
-  try { return JSON.parse(m[1]); } catch { return {}; }
+  try {
+    return JSON.parse(m[1]) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 function replaceBodyMeta(body: string, newMeta: Record<string, unknown>): string {
@@ -270,6 +290,9 @@ async function savePlan(id: number, body: Record<string, unknown>): Promise<unkn
   const { goals, affected_files, effort, notes } = body as {
     goals: string[]; affected_files?: string[]; effort?: string; notes?: string;
   };
+  if (!goals?.length) {
+    throw Object.assign(new Error("Plan must include at least one goal"), { code: "LOTA_INVALID_INPUT" });
+  }
   const humanText = `## Plan\n${goals.map(g => `- ${g}`).join("\n")}${effort ? `\nEstimated effort: ${effort}` : ""}${notes ? `\n\n${notes}` : ""}`;
   const comment = formatMetadata("plan", { goals, affected_files: affected_files || [], effort: effort || "medium", notes }, humanText);
   return await githubFetch(`/repos/${repo()}/issues/${id}/comments`, {
@@ -427,11 +450,17 @@ async function sync(query?: URLSearchParams): Promise<unknown> {
 
   const inProgress = openIssues
     .filter(i => i.labels.some(l => l.name === `${LABEL.STATUS}in-progress`))
-    .map(issue => ({ ...extractFromIssue(issue), comment_count: issue.comments ?? 0 }));
+    .map(issue => {
+      const task = extractFromIssue(issue);
+      return { ...task, comment_count: issue.comments ?? 0 };
+    });
 
   const failed = openIssues
     .filter(i => i.labels.some(l => l.name === `${LABEL.STATUS}failed`))
-    .map(issue => ({ ...extractFromIssue(issue), comment_count: issue.comments ?? 0 }));
+    .map(issue => {
+      const task = extractFromIssue(issue);
+      return { ...task, comment_count: issue.comments ?? 0 };
+    });
 
   const blocked = openIssues
     .filter(i => i.labels.some(l => l.name === `${LABEL.STATUS}blocked`))
@@ -448,8 +477,8 @@ async function sync(query?: URLSearchParams): Promise<unknown> {
   return {
     assigned: assigned.map(slim),
     approved: approved.map(slim),
-    in_progress: inProgress.map(t => ({ ...slim(t), comment_count: (t as any).comment_count })),
-    failed: failed.map(t => ({ ...slim(t), comment_count: (t as any).comment_count })),
+    in_progress: inProgress.map(t => ({ ...slim(t), comment_count: t.comment_count })),
+    failed: failed.map(t => ({ ...slim(t), comment_count: t.comment_count })),
     blocked: blocked.map(slim),
     recently_completed: recentlyCompleted,
   };
@@ -462,6 +491,9 @@ export async function lota(method: string, path: string, body?: Record<string, u
   const query = new URLSearchParams(queryStr || "");
   const idMatch = pathname.match(/\/tasks\/(\d+)/);
   const id = idMatch ? Number(idMatch[1]) : undefined;
+  if (id !== undefined && id < 1) {
+    throw Object.assign(new Error(`Invalid task ID: must be a positive integer, got ${id}`), { code: "LOTA_INVALID_TASK_ID" });
+  }
   const endpoint = pathname.replace(/\/tasks\/\d+/, "/tasks/:id");
 
   // Detect UUID-style IDs (from orchestrator or other systems) and give a clear error

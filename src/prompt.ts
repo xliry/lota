@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { err, dim } from "./logging.js";
+import { err, dim, logNonCritical } from "./logging.js";
 import { isGitRepoRoot, isGitRepo } from "./git.js";
 import type { AgentConfig, WorkData } from "./types.js";
 
@@ -25,7 +25,7 @@ function resolveBuildCmd(workspace?: string): string {
   try {
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
     if (pkg.scripts?.build) return "npm run build";
-  } catch (e) { dim(`[non-critical] failed to read package.json for build cmd: ${(e as Error).message}`); }
+  } catch (e) { logNonCritical("read package.json for build cmd", e); }
   return "npx tsc";
 }
 
@@ -127,9 +127,13 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     "  - Do NOT use TodoWrite tool. USE the Agent tool for parallel subtasks when the task is large.",
     "  - Do NOT re-read the task via lota API. The task body is below.",
     "  - Do NOT post plan comments. Your commit is the audit trail.",
-    "  - If push gets 403, report as comment and stop.",
     "  - Use `gh` CLI for GitHub operations, NOT curl.",
     "  - NEVER force push.",
+    "  - CROSS-FORK PRs: If the task body mentions an upstream repo (e.g. 'Fork repo: owner/repo' or 'PR to owner/repo'),",
+    "    push to the xliry fork, then create the PR with:",
+    "    `GITHUB_TOKEN=\"\" gh pr create --repo <upstream-owner>/<repo> --head xliry:<branch> --base main`",
+    "    The GITHUB_TOKEN=\"\" prefix is required — fine-grained PAT cannot create cross-fork PRs.",
+    "    If push gets 403 to the fork too, report as comment and stop.",
   ].join("\n");
 
   const workflow = [

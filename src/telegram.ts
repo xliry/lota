@@ -1,7 +1,7 @@
 // ── Telegram API ────────────────────────────────────────────────
 
 interface TelegramConfig {
-  telegramBotToken: string;
+  tgAuth: string;
   telegramChatId: string;
   configPath: string;
 }
@@ -18,7 +18,7 @@ async function tgApi(botToken: string, method: string, body?: Record<string, unk
 }
 
 export async function tgSend(config: TelegramConfig, text: string, inlineKeyboard?: unknown[][]): Promise<unknown> {
-  if (!config.telegramBotToken || !config.telegramChatId) return null;
+  if (!config.tgAuth || !config.telegramChatId) return null;
   const body: Record<string, unknown> = {
     chat_id: config.telegramChatId,
     text,
@@ -28,7 +28,7 @@ export async function tgSend(config: TelegramConfig, text: string, inlineKeyboar
     body.reply_markup = { inline_keyboard: inlineKeyboard };
   }
   try {
-    return await tgApi(config.telegramBotToken, "sendMessage", body);
+    return await tgApi(config.tgAuth, "sendMessage", body);
   } catch (e) {
     console.error(`Telegram send failed: ${(e as Error).message}`);
     return null;
@@ -42,7 +42,7 @@ export async function tgSetupChatId(config: TelegramConfig): Promise<string> {
   console.log("\n  Waiting for you to send /start to your Telegram bot...");
   let lastUpdateId = 0;
   for (let attempt = 0; attempt < 60; attempt++) { // 5 minutes max
-    const data = await tgApi(config.telegramBotToken, "getUpdates", {
+    const data = await tgApi(config.tgAuth, "getUpdates", {
       offset: lastUpdateId + 1,
       timeout: 5,
     }) as Array<{ update_id: number; message?: { chat: { id: number }; text?: string } }>;
@@ -61,7 +61,7 @@ export async function tgSetupChatId(config: TelegramConfig): Promise<string> {
           }
         }
         // Send confirmation
-        await tgApi(config.telegramBotToken, "sendMessage", {
+        await tgApi(config.tgAuth, "sendMessage", {
           chat_id: chatId,
           text: "✅ Connected to Lota! You'll receive task notifications and approval requests here.",
         });
@@ -86,7 +86,7 @@ export async function tgWaitForApproval(config: TelegramConfig, taskId: number, 
   const deadline = Date.now() + APPROVAL_TIMEOUT_MS;
   let lastUpdateId = 0;
   while (Date.now() < deadline) {
-    const data = await tgApi(config.telegramBotToken, "getUpdates", {
+    const data = await tgApi(config.tgAuth, "getUpdates", {
       offset: lastUpdateId + 1,
       timeout: 30, // long poll
     }) as Array<{
@@ -100,7 +100,7 @@ export async function tgWaitForApproval(config: TelegramConfig, taskId: number, 
       if (!cb?.data) continue;
 
       // Acknowledge the button press
-      await tgApi(config.telegramBotToken, "answerCallbackQuery", { callback_query_id: cb.id });
+      await tgApi(config.tgAuth, "answerCallbackQuery", { callback_query_id: cb.id });
 
       if (cb.data === `approve_${taskId}`) {
         await tgSend(config, `🚀 Task #${taskId} approved! Executing now.`);

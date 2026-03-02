@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { lota } from "./github.js";
-import { dim } from "./logging.js";
+import { dim, logNonCritical } from "./logging.js";
 import type { AgentConfig, TaskInfo, CommentUpdate, WorkData } from "./types.js";
 
 // ── Dependency checking ───────────────────────────────────────────
@@ -12,7 +12,7 @@ async function checkDependenciesMet(deps: number[], knownCompleted: Set<number>)
       const issue = await lota("GET", `/tasks/${depId}`) as { status: string };
       if (issue.status !== "completed") return false;
     } catch (e) {
-      dim(`[non-critical] checkDependenciesMet: failed to check dep #${depId}: ${(e as Error).message}`);
+      logNonCritical(`check dep #${depId}`, e);
       return false; // can't verify → assume not met
     }
   }
@@ -46,7 +46,7 @@ function loadCommentBaselines(): void {
     }
     if (loaded > 0) dim(`[baselines] loaded ${loaded} comment baseline(s) from disk`);
   } catch (e) {
-    dim(`[non-critical] loadCommentBaselines: ${(e as Error).message}`);
+    logNonCritical("load comment baselines", e);
   }
 }
 
@@ -68,14 +68,14 @@ function saveCommentBaselines(): void {
           if (!data[idStr] && entry.ts >= cutoff) data[idStr] = entry;
         }
       }
-    } catch (e) { dim(`[non-critical] saveCommentBaselines read failed: ${(e as Error).message}`); }
+    } catch (e) { logNonCritical("read existing baselines", e); }
 
     const tmpFile = BASELINES_FILE + ".tmp";
     writeFileSync(tmpFile, JSON.stringify(data, null, 2));
     renameSync(tmpFile, BASELINES_FILE);
     baselinesDirty = false;
   } catch (e) {
-    dim(`[non-critical] saveCommentBaselines: ${(e as Error).message}`);
+    logNonCritical("save comment baselines", e);
   }
 }
 
@@ -86,7 +86,7 @@ export async function refreshCommentBaselines(taskIds: number[]): Promise<void> 
       lastSeenComments.set(id, task.comments?.length ?? 0);
       baselinesDirty = true;
     } catch (e) {
-      dim(`[non-critical] refreshCommentBaselines failed for task #${id}: ${(e as Error).message}`);
+      logNonCritical(`refresh baselines for task #${id}`, e);
     }
   }
   saveCommentBaselines();
@@ -121,7 +121,7 @@ function detectCommentUpdates(
 
 // ── Main work checker ────────────────────────────────────────────
 export async function checkForWork(config: AgentConfig): Promise<WorkData | null> {
-  process.env.GITHUB_TOKEN = config.githubToken;
+  process.env.GITHUB_TOKEN = config.ghAuth;
   process.env.GITHUB_REPO = config.githubRepo;
   process.env.AGENT_NAME = config.agentName;
 
@@ -181,7 +181,7 @@ export async function checkForWork(config: AgentConfig): Promise<WorkData | null
           const details = await lota("GET", `/tasks/${t.id}`) as { plan?: { affected_files?: string[]; goals?: string[] } };
           return { ...t, plan: details.plan };
         } catch (e) {
-          dim(`[non-critical] failed to fetch plan for task #${t.id}: ${(e as Error).message}`);
+          logNonCritical(`fetch plan for task #${t.id}`, e);
           return t;
         }
       })

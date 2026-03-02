@@ -9,9 +9,9 @@ export interface AgentConfig {
   singlePhase: boolean;
   agentName: string;
   maxTasksPerCycle: number;
-  githubToken: string;
+  ghAuth: string;
   githubRepo: string;
-  telegramBotToken: string;
+  tgAuth: string;
   telegramChatId: string;
   maxRssMb: number;
   useWorktree: boolean;

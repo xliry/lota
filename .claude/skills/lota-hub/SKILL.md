@@ -108,7 +108,7 @@ for f in ~/lota/.agents/*.pid; do
 done
 ```
 
-- If the `.agents/` directory doesn't exist or no PIDs are alive → default agent list is `["lota"]` (backwards compatible)
+- If the `.agents/` directory doesn't exist or no PIDs are alive → default agent list is `["lota-1"]`
 - Result: a list like `["lota-1", "lota-2", "lota-3"]`
 
 ## Creating Tasks — The Conversational Way
@@ -137,7 +137,7 @@ Then:
 **Key principles:**
 - Extract title and description from natural conversation
 - Discover alive agents first, assign to least-loaded agent
-- If no agents running (no PID files), default to `assign: "lota"`
+- If no agents running (no PID files), default to `assign: "lota-1"`
 - Only ask for clarification if genuinely ambiguous
 - Keep the body detailed but the title short
 

@@ -49,7 +49,7 @@ function checkRotate(): void {
       logStream = createWriteStream(LOG_FILE, { flags: "a" });
       logStream.on("error", () => {});
     }
-  } catch (e) { dim(`[non-critical] log rotation failed: ${(e as Error).message}`); }
+  } catch (e) { logNonCritical("log rotation", e); }
 }
 
 // ── Core logging functions ───────────────────────────────────────
@@ -74,6 +74,10 @@ export const log = (msg: string) => writeLog(`${PRE} \x1b[90m${time()}\x1b[0m ${
 export const ok = (msg: string) => writeLog(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[32m✓ ${msg}\x1b[0m`, `[${time()}] ✓ ${msg}`);
 export const dim = (msg: string) => writeLog(`${PRE} \x1b[90m${time()} ${msg}\x1b[0m`, `[${time()}] ${msg}`);
 export const err = (msg: string) => writeLog(`${PRE} \x1b[90m${time()}\x1b[0m \x1b[31m✗ ${msg}\x1b[0m`, `[${time()}] ✗ ${msg}`);
+
+/** Log a non-critical error that should not halt execution. */
+export const logNonCritical = (op: string, e: unknown) =>
+  dim(`[non-critical] ${op}: ${(e as Error).message}`);
 
 // ── Periodic GC hint ──────────────────────────────────────────────
 let lastGcTime = Date.now();
