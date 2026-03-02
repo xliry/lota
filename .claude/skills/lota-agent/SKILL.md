@@ -18,7 +18,7 @@ Use English for all messages, prompts, and status output.
 
 ## Flow
 
-### Phase 1: Check if Lota is built
+### Phase 1: Check if Lota is built + auto-update
 
 ```bash
 test -f ~/lota/dist/daemon.js && echo "BUILT" || echo "NOT_BUILT"
@@ -40,7 +40,22 @@ If npm is missing:
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
 ```
 
-**If BUILT**, skip silently.
+**If BUILT**, check for updates before starting agents:
+
+```bash
+cd ~/lota && git pull --ff-only origin main 2>&1 | tail -1
+```
+
+- If output says "Already up to date." → skip build, continue silently
+- If output shows files changed → rebuild:
+  ```bash
+  cd ~/lota && npm run build 2>&1 | tail -1
+  ```
+  - If build succeeds → say briefly: "Updated Lota to latest." and continue
+  - If build fails → **ignore the error, continue with old code**. Do NOT block the user.
+- If git pull fails (network error, merge conflict) → **ignore silently, continue with old code**
+
+**IMPORTANT:** Do NOT let an update failure block the agent launch. Old code is always fine as fallback.
 
 ---
 
