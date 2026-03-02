@@ -4,7 +4,7 @@ description: >
   Lota Hub — your task command center. Create tasks, check progress, approve plans.
   Use when the user says "lota hub", "lota admin", "send task", "check agents",
   "assign task", "create task", "approve", "manage agents", or wants to manage tasks.
-allowed-tools: mcp__lota__lota, Read, Bash
+allowed-tools: mcp__lota__lota, Read, Bash, Glob, Grep, AskUserQuestion
 ---
 
 # Lota Hub
@@ -132,35 +132,108 @@ done
 - If the `.agents/` directory doesn't exist or no PIDs are alive → default agent list is `["lota-1"]`
 - Result: a list like `["lota-1", "lota-2", "lota-3"]`
 
-## Creating Tasks — The Conversational Way
+## Creating Tasks — Smart Context-Aware Flow
 
-**DON'T do this:**
-> "Enter task title:"
-> "Enter priority:"
+**The #1 rule: NEVER write a task body blindly. Always explore the workspace first.**
 
-**DO this instead:**
+The quality of the task body determines whether the agent succeeds or fails. You are the "smart translator" between the user's intent and the agent's instructions. The agent only knows what you write in the task body.
 
-User says something like "sidebar'ı değiştirmesi lazım"
+### Step 1: Understand the user's intent
 
-You respond:
-> "Got it — I'll create a task to migrate the navbar to a sidebar. Assign to Lota, high priority?"
+User says something like "sidebar'daki yazıları değiştir, fotoğrafları ekle"
 
-User confirms → you create it.
+Don't create the task yet. First, understand what they want conversationally.
 
-**Before creating, discover alive agents** (see Agent Discovery section). Then assign to the agent with the fewest pending tasks (round-robin for equal loads):
+### Step 2: Explore the workspace (MANDATORY)
+
+Before writing any task, **read the actual codebase**:
+
+```bash
+# Find the project structure
+ls <workspace>/src/
 ```
-lota("POST", "/tasks", {"title": "...", "assign": "<agent-name>", "priority": "high", "body": "..."})
+
+```
+# Read the main entry point / router to understand routes and structure
+Glob("src/**/*.{tsx,ts,vue,jsx}", path="<workspace>")
+```
+
+```
+# Read the specific files that will be affected
+Read("<workspace>/src/components/EventsSection.tsx")
+```
+
+**What to discover:**
+- Route structure (what URLs exist, which file handles which route)
+- Component tree (which components are used where)
+- The EXACT current state of the code that will change (variable names, line numbers, class names)
+- File paths, import patterns, naming conventions
+
+**How deep to go:**
+- Simple change (text swap, image change) → read the 1-2 affected files
+- Layout change → read the component + its parent + router
+- New page/feature → read router, similar existing pages, shared components
+
+### Step 3: Clarify with the user if needed
+
+After reading the code, you now have context. Ask the user targeted questions:
+
+> "I found 4 event cards in `EventsSection.tsx` (lines 42-68). Each has a category label, city, title, and description. Do you want me to remove ALL text, or keep the titles?"
+
+> "The routes are under `/sectors/` not `/projects/`. The residential page is at `/sectors/residential`. Should the new page follow this pattern?"
+
+Only ask if something is genuinely ambiguous. Don't ask obvious things.
+
+### Step 4: Write a precision task body
+
+Now write the task with **exact references**:
+
+**ALWAYS include in the task body:**
+- Exact file paths: `src/components/EventsSection.tsx`
+- Line numbers or component names: "The `<EventCard>` components at lines 42-68"
+- Current values: "Currently says 'Sadece Satmıyoruz, Tasarıyoruz'"
+- Exact new values: "Replace with BosphorusID video from `src/components/HeroSection.tsx` line 15"
+- **DO NOT TOUCH list**: "Do NOT modify: HeroSection.tsx, App.tsx routes, any CSS files"
+- Route references: "Route is `/sectors/residential` (defined in App.tsx line 23)"
+
+**Task body template:**
+```
+## What to change
+[Exact description with file paths and line numbers]
+
+## Files to modify
+- `src/components/EventsSection.tsx` — lines 42-68: replace card text with images
+- `src/App.tsx` — line 23: add new route
+
+## DO NOT TOUCH
+- `src/components/HeroSection.tsx`
+- `src/styles/global.css`
+- Any existing routes
+
+## Current state
+[Paste relevant code snippets or describe current structure]
+
+## Expected result
+[What it should look like after the change]
+```
+
+### Step 5: Discover agents and create task
+
+**Discover alive agents** (see Agent Discovery section). Assign to least-loaded agent:
+```
+lota("POST", "/tasks", {"title": "...", "assign": "<agent-name>", "priority": "high", "body": "...", "workspace": "~/project"})
 ```
 
 Then:
 > "Created task #42, assigned to lota-1. What's next?"
 
-**Key principles:**
-- Extract title and description from natural conversation
-- Discover alive agents first, assign to least-loaded agent
+### Key principles
+- **NEVER write a task without reading the workspace first** — this is the #1 cause of agent errors
+- Explore first, ask questions second, write task last
+- Include exact file paths and line numbers in every task
+- Include a "DO NOT TOUCH" list in every task
+- The more specific the task body, the fewer correction cycles needed
 - If no agents running (no PID files), default to `assign: "lota-1"`
-- Only ask for clarification if genuinely ambiguous
-- Keep the body detailed but the title short
 
 ## Workspace Conflict Check
 
