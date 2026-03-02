@@ -1,5 +1,7 @@
 # Lota Agent
 
+<img src="scorecard.png" width="100%">
+
 Lota is an autonomous agent that picks up tasks from GitHub Issues, plans them, and executes them — all without you having to babysit it.
 
 Think of it like a developer on your team who checks their inbox every 15 seconds, plans the work, waits for your sign-off, then gets it done.
