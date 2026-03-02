@@ -294,13 +294,13 @@ pkill -f "node.*daemon" 2>/dev/null; true
 **Create tmux session with first agent:**
 ```bash
 tmux new-session -d -s lota-agents -x 220 -y 50
-tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-1 --interval 15 --mode {MODE}" Enter
+tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-1 --interval 15 --mode {MODE} --model opus" Enter
 ```
 
 **For each additional agent (lota-2, lota-3, etc.):**
 ```bash
 tmux split-window -t lota-agents
-tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-{N} --interval 15 --mode {MODE}" Enter
+tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-{N} --interval 15 --mode {MODE} --model opus" Enter
 ```
 
 **Balance panes after all agents started:**
