@@ -205,6 +205,10 @@ function sleep(sec: number): Promise<void> {
   });
 }
 
+// ── Crash retry tracking ─────────────────────────────────────────
+const MAX_CRASH_RETRIES = 3;
+const crashCounts = new Map<number, number>();
+
 // ── Main loop helpers ────────────────────────────────────────────
 function printBanner(config: AgentConfig): void {
   const modeLabel = config.mode === "supervised"
@@ -267,7 +271,10 @@ async function handleCycleResult(code: number, work: WorkData, elapsed: number, 
 
     if (config.mode === "auto" && work.phase === "plan") {
       for (const t of work.tasks) {
-        ok(`Task #${t.id} plan complete — waiting for Hub approval`);
+        ok(`Task #${t.id} plan complete — auto-approving`);
+        try {
+          await lota("POST", `/tasks/${t.id}/status`, { status: "approved" });
+        } catch (e) { err(`Auto-approve failed for task #${t.id}: ${(e as Error).message}`); }
       }
     }
 
@@ -297,10 +304,31 @@ async function handleCycleResult(code: number, work: WorkData, elapsed: number, 
       catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
     }
     for (const t of work.tasks) {
-      lota("POST", `/tasks/${t.id}/comment`, {
-        content: `⚠️ Agent crashed (exit code ${code}). Task reset to assigned for retry.`,
-      }).catch(e => dim(`Comment failed for task #${t.id}: ${(e as Error).message}`));
-      lota("POST", `/tasks/${t.id}/status`, { status: "assigned" }).catch(e => dim(`Status reset failed for task #${t.id}: ${(e as Error).message}`));
+      // Check current status — task may have been completed before the crash
+      try {
+        const current = await lota("GET", `/tasks/${t.id}`) as { status: string; report?: unknown };
+        if (current.status === "completed" || current.report) {
+          dim(`Task #${t.id} already completed — skipping crash reset`);
+          continue;
+        }
+      } catch (e) { logNonCritical(`check task #${t.id} status`, e); }
+
+      const crashes = (crashCounts.get(t.id) ?? 0) + 1;
+      crashCounts.set(t.id, crashes);
+
+      if (crashes >= MAX_CRASH_RETRIES) {
+        err(`Task #${t.id} crashed ${crashes} times — marking as failed`);
+        lota("POST", `/tasks/${t.id}/comment`, {
+          content: `❌ Task failed after ${crashes} crashes (exit code ${code}). Manual review needed.`,
+        }).catch(e => dim(`Comment failed for task #${t.id}: ${(e as Error).message}`));
+        lota("POST", `/tasks/${t.id}/status`, { status: "failed" }).catch(e => dim(`Status update failed for task #${t.id}: ${(e as Error).message}`));
+        crashCounts.delete(t.id);
+      } else {
+        lota("POST", `/tasks/${t.id}/comment`, {
+          content: `⚠️ Agent crashed (exit code ${code}). Retry ${crashes}/${MAX_CRASH_RETRIES}.`,
+        }).catch(e => dim(`Comment failed for task #${t.id}: ${(e as Error).message}`));
+        lota("POST", `/tasks/${t.id}/status`, { status: "assigned" }).catch(e => dim(`Status reset failed for task #${t.id}: ${(e as Error).message}`));
+      }
     }
   }
 }

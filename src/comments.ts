@@ -97,6 +97,7 @@ function detectCommentUpdates(
   tasks: (TaskInfo & { comment_count: number })[],
   firstSeen: boolean,
 ): CommentUpdate[] {
+  const MAX_NEW_COMMENTS = 20; // skip spam — likely crash retry loops
   const updates: CommentUpdate[] = [];
   for (const task of tasks) {
     const lastSeen = lastSeenComments.get(task.id) ?? -1;
@@ -106,11 +107,19 @@ function detectCommentUpdates(
       baselinesDirty = true;
       if (firstSeen) continue; // don't trigger on first sight
     } else if (currentCount > lastSeen) {
+      const newCount = currentCount - lastSeen;
+      if (newCount > MAX_NEW_COMMENTS) {
+        // Too many new comments — likely crash spam, just update baseline
+        dim(`  ⏭ Skipping #${task.id}: ${newCount} new comments (likely spam) — updating baseline`);
+        lastSeenComments.set(task.id, currentCount);
+        baselinesDirty = true;
+        continue;
+      }
       updates.push({
         id: task.id,
         title: task.title,
         workspace: task.workspace ?? undefined,
-        new_comment_count: currentCount - lastSeen,
+        new_comment_count: newCount,
       });
       lastSeenComments.set(task.id, currentCount);
       baselinesDirty = true;

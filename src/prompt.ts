@@ -129,6 +129,8 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     "  - Do NOT post plan comments. Your commit is the audit trail.",
     "  - Use `gh` CLI for GitHub operations, NOT curl.",
     "  - NEVER force push.",
+    "  - SCOREBOARD: The bounty scoreboard is at ~/lota-agents/bounty-scoreboard.md (repo: xliry/lota-agents).",
+    "    To update: read the file, edit your row, commit, and push from ~/lota-agents (NOT from the workspace).",
     "  - CROSS-FORK PRs: If the task body mentions an upstream repo (e.g. 'Fork repo: owner/repo' or 'PR to owner/repo'),",
     "    push to the xliry fork, then create the PR with:",
     "    `GITHUB_TOKEN=\"\" gh pr create --repo <upstream-owner>/<repo> --head xliry:<branch> --base main`",
