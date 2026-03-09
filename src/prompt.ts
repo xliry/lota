@@ -10,9 +10,9 @@ function sanitizeTaskBody(body: string): string {
   cleaned = cleaned.replace(/!\[([^\]]*)\]\([^)]*\)/g, "[image: $1]");
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n").trim();
 
-  const MAX = 2000;
-  const HEAD = 1000;
-  const TAIL = 500;
+  const MAX = 16000;
+  const HEAD = 12000;
+  const TAIL = 3000;
   if (cleaned.length <= MAX) return cleaned;
   return cleaned.slice(0, HEAD) + "\n\n... [truncated] ...\n\n" + cleaned.slice(-TAIL);
 }
@@ -116,7 +116,7 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
   const branchName = `task-${t.id}-${agentName}`;
   const branchRule = config.useWorktree
     ? "  - You are already in the correct workspace directory (git worktree)."
-    : `  - You are in the workspace directory. First, run: git checkout -b ${branchName} (or git checkout ${branchName} if it exists). Push to this branch.`;
+    : `  - You are in the workspace directory. First, run: git pull origin main && git checkout -b ${branchName} (or git checkout ${branchName} if it exists). Push to this branch.`;
   const rules = [
     "RULES:",
     branchRule,
@@ -131,11 +131,19 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     "  - NEVER force push.",
     "  - SCOREBOARD: The bounty scoreboard is at ~/lota-agents/bounty-scoreboard.md (repo: xliry/lota-agents).",
     "    To update: read the file, edit your row, commit, and push from ~/lota-agents (NOT from the workspace).",
-    "  - CROSS-FORK PRs: If the task body mentions an upstream repo (e.g. 'Fork repo: owner/repo' or 'PR to owner/repo'),",
-    "    push to the xliry fork, then create the PR with:",
-    "    `GITHUB_TOKEN=\"\" gh pr create --repo <upstream-owner>/<repo> --head xliry:<branch> --base main`",
+    "  - CROSS-FORK PRs: You are working in a FORK (xliry/desloppify). PRs MUST go to the UPSTREAM repo.",
+    "    ALWAYS use this EXACT command to create PRs:",
+    "    `GITHUB_TOKEN=\"\" gh pr create --repo peteromallet/desloppify --head xliry:<branch> --base main --body-file <file>`",
+    "    NEVER run `gh pr create` without `--repo peteromallet/desloppify`. NEVER open PRs to xliry/desloppify.",
     "    The GITHUB_TOKEN=\"\" prefix is required — fine-grained PAT cannot create cross-fork PRs.",
-    "    If push gets 403 to the fork too, report as comment and stop.",
+    `  - PR BODY TEMPLATE: If /tmp/pr-template-${t.id}.md exists, it is the EXACT PR body structure you MUST use.`,
+    "    Read the file, fill in every <placeholder> with real values from your analysis, and pass it via --body-file.",
+    "    Do NOT write your own PR body. Do NOT paraphrase, summarize, skip sections, or restructure.",
+    "    Every heading, table, and bullet point in the template MUST appear in the final PR body.",
+    "  - BOUNTY SNAPSHOT: When verifying bounty submissions, ALWAYS read source files at commit 6eb2065.",
+    "    Use `git show 6eb2065:<path>` to read files. Do NOT use the working tree — it may have changed since the submission.",
+    "    Run `git fetch origin` first if the commit is not available locally.",
+    "  - SIGNATURE: When creating PRs, end the body with: Generated with [Lota](https://github.com/xliry/lota)",
   ].join("\n");
 
   const workflow = [

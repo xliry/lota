@@ -7,7 +7,7 @@ import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
 import { LOG_FILE, LOG_DIR, log, ok, dim, err, logNonCritical, writeLog, logMemory, periodicGcHint, closeLog } from "./logging.js";
 import { checkForWork, refreshCommentBaselines } from "./comments.js";
 import { recoverStaleTasks, checkRuntimeStaleTasks } from "./recovery.js";
-import { runClaude, getCurrentProcess, resetBusy } from "./process.js";
+import { runClaude, getCurrentProcess, resetBusy, wasRateLimited } from "./process.js";
 import type { AgentConfig, AgentMode, WorkData } from "./types.js";
 
 const MS_PER_MINUTE = 60_000;
@@ -209,6 +209,15 @@ function sleep(sec: number): Promise<void> {
 const MAX_CRASH_RETRIES = 3;
 const crashCounts = new Map<number, number>();
 
+// ── Rate limit backoff ───────────────────────────────────────────
+let consecutiveRateLimits = 0;
+const RATE_LIMIT_WAIT_TIERS = [2, 5, 15, 30]; // minutes
+
+function getRateLimitWaitMinutes(): number {
+  const idx = Math.min(consecutiveRateLimits, RATE_LIMIT_WAIT_TIERS.length - 1);
+  return RATE_LIMIT_WAIT_TIERS[idx];
+}
+
 // ── Main loop helpers ────────────────────────────────────────────
 function printBanner(config: AgentConfig): void {
   const modeLabel = config.mode === "supervised"
@@ -267,6 +276,7 @@ async function logWorkActivity(work: WorkData, config: AgentConfig): Promise<voi
 
 async function handleCycleResult(code: number, work: WorkData, elapsed: number, config: AgentConfig): Promise<void> {
   if (code === 0) {
+    consecutiveRateLimits = 0;
     ok(`${work.phase} phase complete in ${elapsed}s`);
 
     if (config.mode === "auto" && work.phase === "plan") {
@@ -297,7 +307,22 @@ async function handleCycleResult(code: number, work: WorkData, elapsed: number, 
         catch (e) { err(`Telegram send failed: ${(e as Error).message}`); }
       }
     }
+  } else if (wasRateLimited()) {
+    // Rate limit — don't count as crash, wait and retry
+    consecutiveRateLimits++;
+    const waitMinutes = getRateLimitWaitMinutes();
+    log(`⏳ Rate limited — waiting ${waitMinutes}m before retrying (consecutive: ${consecutiveRateLimits})`);
+
+    for (const t of work.tasks) {
+      lota("POST", `/tasks/${t.id}/comment`, {
+        content: `⏳ Rate limited — agent will retry in ${waitMinutes} minutes.`,
+      }).catch(e => dim(`Comment failed for task #${t.id}: ${(e as Error).message}`));
+      lota("POST", `/tasks/${t.id}/status`, { status: "assigned" }).catch(e => dim(`Status reset failed for task #${t.id}: ${(e as Error).message}`));
+    }
+
+    await sleep(waitMinutes * 60);
   } else {
+    consecutiveRateLimits = 0;
     err(`Claude exited with code ${code} after ${elapsed}s`);
     if (config.mode === "supervised") {
       try { await tgSend(config, `❌ Error: Claude exited with code ${code} after ${elapsed}s`); }
@@ -392,6 +417,28 @@ async function main() {
     await logWorkActivity(work, config);
     console.log("  ─────────────────────────────────────");
     logMemory("Pre-Claude", config);
+
+    // Extract PR body template from task body and write to /tmp for the agent
+    if (work.tasks.length > 0) {
+      const task = work.tasks[0];
+      let body = task.body || "";
+      // /sync strips body — fetch full task if body is missing
+      if (!body) {
+        try {
+          const full = await lota("GET", `/tasks/${task.id}`) as { body?: string };
+          body = full.body || "";
+        } catch (e) { logNonCritical(`fetch body for template extraction #${task.id}`, e); }
+      }
+      if (body) {
+        const templateRegex = /```\n(\*\*(?:Issue|Submission):\*\*[\s\S]*?)```/;
+        const match = body.match(templateRegex);
+        if (match) {
+          const templatePath = `/tmp/pr-template-${task.id}.md`;
+          writeFileSync(templatePath, match[1].trim() + "\n");
+          dim(`PR template extracted → ${templatePath} (${match[1].length} chars)`);
+        }
+      }
+    }
 
     const cycleStart = Date.now();
     let code: number;

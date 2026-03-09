@@ -58,6 +58,13 @@ export function checkout(cwd: string, branch: string): boolean {
   return r.ok;
 }
 
+/** Create and checkout a new branch. */
+export function checkoutNewBranch(cwd: string, branch: string): boolean {
+  const r = gitExec(`git checkout -b "${branch}"`, cwd);
+  if (!r.ok) dim(`[git] checkout -b "${branch}" failed: ${r.output.slice(0, 120)}`);
+  return r.ok;
+}
+
 /**
  * Delete a local branch. Checks branchExists first.
  * Uses -D (force) to handle unmerged branches.

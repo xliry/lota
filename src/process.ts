@@ -11,9 +11,13 @@ import type { AgentConfig, WorkData } from "./types.js";
 
 let currentProcess: ChildProcess | null = null;
 let busy = false;
+let lastRunRateLimited = false;
 
 export function getCurrentProcess(): ChildProcess | null { return currentProcess; }
 export function resetBusy(): void { busy = false; }
+export function wasRateLimited(): boolean { return lastRunRateLimited; }
+
+const RATE_LIMIT_PATTERNS = /rate.?limit|429|overloaded|too many requests|retry.?after/i;
 
 // ── Git branch merge (simple branch strategy) ───────────────────
 function mergeBranch(workspace: string, branch: string): { success: boolean; hasConflicts: boolean; output: string } {
@@ -141,8 +145,16 @@ function setupBranchStrategy(config: AgentConfig, work: WorkData, workingDir: st
     return { claudeCwd: workingDir, worktreeInfo: null, defaultBranch: null };
   }
 
+  // Pull latest main, then create and checkout task branch — agent starts on the correct branch
+  const mainBranch = git.getDefaultBranch(workingDir) || "main";
+  git.checkout(workingDir, mainBranch);
+  git.pull(workingDir, "origin", mainBranch);
+
   const defaultBranch = `task-${work.tasks[0].id}-${config.agentName}`;
-  ok(`Branch strategy: agent will work on branch ${defaultBranch}`);
+  if (!git.checkout(workingDir, defaultBranch)) {
+    git.checkoutNewBranch(workingDir, defaultBranch);
+  }
+  ok(`Branch strategy: checked out branch ${defaultBranch}`);
   return { claudeCwd: workingDir, worktreeInfo: null, defaultBranch };
 }
 
@@ -183,6 +195,13 @@ function handlePostCompletion(
   if (defaultBranch && code === 0) {
     if (!isGitRepoRoot(workingDir)) {
       dim(`Skipping merge — workspace is not a git repo root: ${workingDir}`);
+      return;
+    }
+    // Skip merge for cross-fork PRs (task body mentions upstream repo)
+    const taskBody = work.tasks[0]?.body || "";
+    const taskTitle = work.tasks[0]?.title || "";
+    if (taskBody.includes("--repo ") || taskBody.includes("PR to ") || taskTitle.toLowerCase().startsWith("bounty:")) {
+      dim(`Skipping merge — cross-fork PR workflow, branch preserved for upstream review`);
       return;
     }
     log(`Merging branch ${defaultBranch} back to main...`);
@@ -242,10 +261,13 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
 
     const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"], cwd: claudeCwd, env: cleanEnv });
     currentProcess = child;
+    lastRunRateLimited = false;
 
     let jsonBuffer = "";
     child.stdout?.on("data", (d: Buffer) => {
-      jsonBuffer += d.toString();
+      const chunk = d.toString();
+      if (RATE_LIMIT_PATTERNS.test(chunk)) lastRunRateLimited = true;
+      jsonBuffer += chunk;
       const lines = jsonBuffer.split("\n");
       jsonBuffer = lines.pop() || "";
       for (const line of lines) {
@@ -260,7 +282,9 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
     });
 
     child.stderr?.on("data", (d: Buffer) => {
-      for (const line of d.toString().split("\n")) {
+      const chunk = d.toString();
+      if (RATE_LIMIT_PATTERNS.test(chunk)) lastRunRateLimited = true;
+      for (const line of chunk.split("\n")) {
         if (line.trim()) writeToLog(`  [stderr] ${line}\n`);
       }
     });
