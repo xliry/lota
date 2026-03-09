@@ -157,9 +157,11 @@ export async function checkForWork(config: AgentConfig): Promise<WorkData | null
     }
   }
 
-  const assigned = data.assigned || [];
-  const approved = data.approved || [];
-  const inProgress = data.in_progress || [];
+  // Filter out DM channels — they are handled via comment detection only
+  const isDM = (t: TaskInfo) => t.title.startsWith("DM:");
+  const assigned = (data.assigned || []).filter(t => !isDM(t));
+  const approved = (data.approved || []).filter(t => !isDM(t));
+  const inProgress = data.in_progress || []; // keep DMs here for comment detection
   const recentlyCompleted = data.recently_completed || [];
 
   const commentUpdates = [

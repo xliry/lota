@@ -14,11 +14,13 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dm": "node dist/dm.js"
   },
   "bin": {
     "lota": "dist/index.js",
-    "lota-agent": "dist/daemon.js"
+    "lota-agent": "dist/daemon.js",
+    "lota-dm": "dist/dm.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

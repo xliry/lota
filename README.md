@@ -11,6 +11,7 @@ git clone https://github.com/xliry/lota.git ~/lota
 cd ~/lota && npm install && npm run build
 ln -sf ~/lota/.claude/skills/lota-agent ~/.claude/skills/lota-agent
 ln -sf ~/lota/.claude/skills/lota-hub ~/.claude/skills/lota-hub
+ln -sf ~/lota/.claude/skills/lota-dm ~/.claude/skills/lota-dm
 ```
 
 Then restart Claude Code.
@@ -18,6 +19,7 @@ Then restart Claude Code.
 After restart:
 - `/lota-agent` — set up GitHub connection + start the agent
 - `/lota-hub` — create tasks, approve plans, check progress
+- `/lota-dm` — direct message chat with a running agent (tmux)
 
 ## How It Works
 

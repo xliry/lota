@@ -36,7 +36,7 @@ export async function recoverStaleTasks(config: AgentConfig): Promise<void> {
   }
 
   const tasks = tasksResult.data as StaleTask[];
-  const myTasks = tasks.filter(t => t.assignee === config.agentName);
+  const myTasks = tasks.filter(t => t.assignee === config.agentName && !t.title.startsWith("DM:"));
   if (!myTasks.length) {
     dim("  No stale in-progress tasks found.");
     return;
@@ -116,7 +116,7 @@ export async function checkRuntimeStaleTasks(config: AgentConfig): Promise<void>
 
   const tasks = tasksResult.data as Array<{ id: number; title: string; assignee: string | null; updatedAt?: string }>;
   const now = Date.now();
-  for (const task of tasks.filter(t => t.assignee === config.agentName)) {
+  for (const task of tasks.filter(t => t.assignee === config.agentName && !t.title.startsWith("DM:"))) {
     if (!task.updatedAt) continue;
     const age = now - new Date(task.updatedAt).getTime();
     if (age < FIVE_MINUTES_MS) continue;

@@ -75,19 +75,46 @@ function warnIfNotGitRoot(dir: string): void {
 // ── Prompt builder ───────────────────────────────────────────────
 export function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): string {
   if (work.phase === "comments") {
-    const list = work.commentUpdates.map(cu =>
-      `  #${cu.id} "${cu.title}": ${cu.new_comment_count} new comment(s)${cu.workspace ? ` — ${cu.workspace}` : ""}`
-    ).join("\n");
-    return [
+    const dmUpdates = work.commentUpdates.filter(cu => cu.title.startsWith("DM:"));
+    const taskUpdates = work.commentUpdates.filter(cu => !cu.title.startsWith("DM:"));
+
+    const parts: string[] = [
       `You are agent "${agentName}". Your MCP tool is lota().`,
       "",
-      "NEW COMMENTS on tasks. Read via lota API and respond appropriately.",
-      "  - User feedback → adjust your work",
-      "  - Question → reply with a comment",
-      "  - Changed requirements → update your approach",
-      "",
-      list,
-    ].join("\n");
+    ];
+
+    if (dmUpdates.length) {
+      const dmList = dmUpdates.map(cu =>
+        `  #${cu.id} "${cu.title}": ${cu.new_comment_count} new message(s)`
+      ).join("\n");
+      parts.push(
+        "DIRECT MESSAGES — Someone is chatting with you live. Read and reply conversationally.",
+        "  - Be concise, friendly, and helpful.",
+        "  - Reply with lota(\"POST\", \"/tasks/<id>/comment\", {content: \"...\"}).",
+        "  - Do NOT post plans, status updates, or completion reports.",
+        "  - Do NOT use <!-- lota: --> metadata tags in your replies.",
+        "  - This is a conversation, not a task. Just chat.",
+        "",
+        dmList,
+      );
+    }
+
+    if (taskUpdates.length) {
+      const taskList = taskUpdates.map(cu =>
+        `  #${cu.id} "${cu.title}": ${cu.new_comment_count} new comment(s)${cu.workspace ? ` — ${cu.workspace}` : ""}`
+      ).join("\n");
+      if (dmUpdates.length) parts.push("");
+      parts.push(
+        "NEW COMMENTS on tasks. Read via lota API and respond appropriately.",
+        "  - User feedback → adjust your work",
+        "  - Question → reply with a comment",
+        "  - Changed requirements → update your approach",
+        "",
+        taskList,
+      );
+    }
+
+    return parts.join("\n");
   }
 
   const t = work.tasks[0];
