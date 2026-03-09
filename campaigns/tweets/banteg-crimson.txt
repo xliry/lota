@@ -1,0 +1,17 @@
+We ran @desloppify on banteg/crimson — a reverse-engineered Crimsonland reimplementation in Python + Zig (115K lines).
+Sloppy Score: 14/100.
+Here's what we found...
+
+The worst offender: creatures.zig — 6,500 lines and 72 functions in a single file.
+AI movement, damage resolution, perk interactions, spawn slots — all in one flat module.
+The Python side already splits this into creatures/spawn.py, creatures/runtime.py etc. The Zig side should follow.
+
+Also found:
+- base_gameplay_mode.py: 2,000-line god class with 138 methods handling input, rendering, replay, LAN, and perk menus
+- lighting_debug.py: a 3,300-line debug view that's bigger than most production game files
+These aren't style nitpicks — they're maintenance risks in an otherwise pristine codebase.
+
+But honestly? This is one of the cleanest repos we've ever scanned.
+Zero TODOs. Only 3 type:ignore in 82K lines of Python. Custom ast-grep rules. Bit-exact float32 parity.
+14/100 sloppy — banteg sets the bar. Full report: github.com/peteromallet/desloppify
+Run desloppify on YOUR repo: github.com/peteromallet/desloppify

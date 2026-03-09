@@ -1,9 +1,18 @@
 [
   {
     "url": "https://github.com/example/example-project",
-    "status": "pending",
+    "status": "queued",
     "priority": "high",
-    "notes": "Example entry — replace with real repos",
-    "added": "2026-03-09"
+    "notes": "Example entry \u2014 replace with real repos",
+    "added": "2026-03-09",
+    "task": "#555"
+  },
+  {
+    "url": "https://github.com/banteg/crimson",
+    "status": "completed",
+    "priority": "medium",
+    "notes": "User requested analysis",
+    "added": "2026-03-10",
+    "task": "#556"
   }
 ]
