@@ -1,17 +1,24 @@
-We ran @desloppify on banteg/crimson — a reverse-engineered Crimsonland reimplementation in Python + Zig (115K lines).
-Sloppy Score: 14/100.
-Here's what we found...
+We ran @desloppify on banteg/crimson — a reverse-engineered Crimsonland in Python + raylib. 132K lines, 727 files.
 
-The worst offender: creatures.zig — 6,500 lines and 72 functions in a single file.
-AI movement, damage resolution, perk interactions, spawn slots — all in one flat module.
-The Python side already splits this into creatures/spawn.py, creatures/runtime.py etc. The Zig side should follow.
+Strict score: 77.4/100. That's genuinely good.
 
-Also found:
-- base_gameplay_mode.py: 2,000-line god class with 138 methods handling input, rendering, replay, LAN, and perk menus
-- lighting_debug.py: a 3,300-line debug view that's bigger than most production game files
-These aren't style nitpicks — they're maintenance risks in an otherwise pristine codebase.
+Here's what the scanner found 🧵
 
-But honestly? This is one of the cleanest repos we've ever scanned.
-Zero TODOs. Only 3 type:ignore in 82K lines of Python. Custom ast-grep rules. Bit-exact float32 parity.
-14/100 sloppy — banteg sets the bar. Full report: github.com/peteromallet/desloppify
-Run desloppify on YOUR repo: github.com/peteromallet/desloppify
+The biggest drag: test health at 12.3%. 325 production modules without coverage. The network runtime (lockstep + rollback) is a complex stateful beast with limited tests. When your netcode is doing rollback prediction, maybe test it?
+
+Found a sneaky anti-pattern: cast(RelayUdpTransport, None) — typed as non-optional, actually None at runtime. The type checker sees no problem. Your production code will.
+
+loop_view.py: GLSL shaders, gamma correction, view dispatch, and screen transitions — all in one file. It's the "I'll just add one more thing" hall of fame.
+
+Also: preserve_bugs=False threaded through 3 different config types. The creatures module literally says "This package will grow as we port creature_* logic from the original binary." Respect the honesty.
+
+But honestly? This is a strong codebase.
+- Import linter enforcing architectural boundaries
+- 96.5% security score
+- Zero AI-generated debt (all hand-written)
+- msgspec structs everywhere, modern Python 3.13+ tooling
+
+77.4/100 strict — banteg ships clean code. The main fix is just: write more tests.
+
+Full report + methodology: github.com/peteromallet/desloppify
+Run desloppify on YOUR repo: pip install desloppify

@@ -1,50 +1,91 @@
 # Desloppify Report: banteg/crimson
 
-**Sloppy Score:** 14/100
+**Strict Score:** 77.4/100
+**Objective Score:** 76.1/100
 **Date:** 2026-03-10
-**Analyzed by:** Lota
+**Analyzed by:** Lota (desloppify v0.7.0 CLI)
 
 ## Overview
 
-banteg/crimson is a high-fidelity reverse-engineered reimplementation of Crimsonland v1.9.93 (2003) in Python + raylib, with a parallel Zig runtime for performance-critical simulation. The project totals ~115K lines of source code (82K Python, 33K Zig) plus 37K lines of tests across 306 test files. It features comprehensive CI (lint, type checking, ast-grep custom rules, pytest), 100+ pages of documentation, and a custom differential testing harness for verifying behavioral parity against the original binary.
+banteg/crimson is a high-fidelity reverse-engineered reimplementation of Crimsonland v1.9.93 in Python + raylib, with a parallel Zig runtime (`crimson-zig/`). The project spans **727 files, 132K LOC across 71 directories**, with 382 production source files and 306 test files. It uses modern Python 3.13+ with msgspec, structlog, typer, and raylib bindings.
 
-This is an exceptionally well-engineered codebase. The low sloppy score reflects genuine craftsmanship: zero TODOs/FIXMEs in source, only 3 type:ignore annotations, strong typing via msgspec structs, meticulous float32 parity discipline, and purpose-built ast-grep linting rules that enforce project-specific invariants.
+## Scan Results
+
+| Dimension | Health | Strict | Notes |
+|-----------|--------|--------|-------|
+| Code quality | 91.7% | 91.7% | Strong — 416 issues across 3,009 checks |
+| Security | 96.5% | 96.5% | 116 issues in 713 files scanned |
+| Duplication | 93.6% | 93.6% | 209 boilerplate clusters, 76 function clusters |
+| File health | 81.2% | 81.2% | 116 structural issues, 10 overloaded directories |
+| Test health | 12.3% | 12.3% | 325 untested production modules — biggest drag |
+
+**Total mechanical issues:** 1,650
+**Subjective dimensions assessed:** 20
+
+## Scorecard Dimensions (Subjective)
+
+| Dimension | Score | Key Finding |
+|-----------|-------|-------------|
+| AI generated debt | 90% | Hand-written code, no AI boilerplate detected |
+| Cross-module arch | 85% | Import linter contracts enforce boundaries; one grim→crimson exception |
+| Authorization consistency | 88% | Network protocol has proper handshake/version checking |
+| Package organization | 83% | Well-organized but screens/panels/ has 11+ flat panel modules |
+| Naming quality | 82% | Strong domain vocabulary; duplicated _now_ms() helpers |
+| High-level elegance | 82% | Clean sim/render/net separation enforced by import linter |
+| Abstraction fitness | 80% | loop_view.py mixes view dispatch, shaders, and transitions |
+| Convention drift | 80% | Mixed constant visibility conventions (_UPPER vs UPPER) |
+| Design coherence | 80% | Consistent msgspec.Struct usage with minor pattern variations |
+| Mid-level elegance | 78% | replay.py (1,615 LOC) and loop_view.py are oversized |
+| Dependency health | 78% | Minimal, well-chosen deps; _now_ms() duplicated across net modules |
+| Contract coherence | 77% | WorldState.step() has implicit ordering requirements |
+| API coherence | 76% | CLI exposes internal callbacks; some packages over-export |
+| Type safety | 75% | cast(Type, None) workarounds hide runtime None in typed fields |
+| Low-level elegance | 74% | Effective structs but many-parameter functions |
+| Initialization coupling | 72% | WorldState.build() takes 5 loosely-related params; lazy imports |
+| Error consistency | 70% | Network uses error strings on structs vs exceptions in CLI |
+| Incomplete migration | 70% | creatures/ docstring says "ongoing port"; preserve_bugs flag threaded through |
+| Test strategy | 65% | 306 test files but 12.3% health — network/sim coverage gaps |
 
 ## Top Findings
 
-### 1. creatures.zig is a 6,500-line monolith with 72 functions
-- **Severity:** Medium
-- **File:** crimson-zig/src/runtime/creatures.zig:1
-- **Issue:** At 6,513 lines and 72 functions, this single file handles creature state, AI updates, collision resolution, damage application, spawn slot management, and perk interactions. The `CreaturePool` struct and its methods cover the entire creature lifecycle in one flat namespace. While Zig's module system encourages larger files than typical OOP languages, this exceeds reasonable single-file scope and makes navigation difficult.
-- **Fix:** Extract cohesive subsystems (AI movement, damage/combat resolution, perk-creature interactions) into sibling modules under `runtime/creatures/`, keeping `CreaturePool` as the orchestrator. The Python side already demonstrates this pattern with `creatures/spawn.py`, `creatures/runtime.py`, etc.
+### 1. Test health is the dominant weakness (12.3%)
+- **Impact:** -5.85 pts on overall score
+- **Issue:** 325 production modules lack test coverage. Network runtime modules (lockstep, rollback) are complex stateful systems with limited tests.
+- **Fix:** Prioritize integration tests for network protocol state machines using mock transports.
 
-### 2. base_gameplay_mode.py is a 2,000-line god class with 138 methods
-- **Severity:** Medium
-- **File:** src/crimson/modes/base_gameplay_mode.py:1
-- **Issue:** This file has 80+ import lines and 138 methods, acting as the central hub for all gameplay mode logic including input handling, simulation ticking, rendering, replay recording, LAN synchronization, perk menus, and game-over flow. The sheer surface area makes it hard to understand which methods belong to which concern.
-- **Fix:** Extract rendering, replay recording, and LAN sync into composable helper classes or standalone functions. The file already delegates to `FixedStepClock`, `RollbackRuntime`, etc. — push more responsibilities into those delegates.
+### 2. cast(None) anti-pattern in network runtime
+- **Severity:** High
+- **Files:** `src/crimson/net/rollback_runtime.py`, `src/crimson/net/lockstep_runtime.py`
+- **Issue:** `transport: RelayUdpTransport = cast(RelayUdpTransport, None)` — fields typed as non-optional but initialized to None, creating runtime type safety gaps.
+- **Fix:** Use `Optional[RelayUdpTransport]` with None default or restructure initialization.
 
-### 3. lighting_debug.py is 3,300 lines for a debug visualization
-- **Severity:** Low
-- **File:** src/crimson/debug_views/lighting_debug.py:1
-- **Issue:** A debug view file that exceeds the size of most production game logic files. It defines 30+ constants, manages interactive light placement, shadow rendering, occlusion, temporal accumulation, and auto-diagnostics — essentially a standalone mini-application embedded in a debug view. While debug tooling can grow organically, this is harder to maintain than necessary.
-- **Fix:** Factor the shadow rendering pipeline, light management, and auto-diagnostic harness into separate modules under `debug_views/lighting/`. This keeps the interactive view thin and makes the shadow renderer testable in isolation.
+### 3. loop_view.py is a mixed-concern monolith
+- **Severity:** Medium
+- **File:** `src/crimson/game/loop_view.py`
+- **Issue:** Contains GLSL shader source strings, global mutable shader state, gamma correction, view dispatch, and screen transitions in one module.
+- **Fix:** Extract shader/gamma management into render utilities.
+
+### 4. Incomplete migration signals
+- **Severity:** Medium
+- **Files:** Multiple modules
+- **Issue:** `preserve_bugs: bool = False` parameter threaded through WorldState, lockstep, and rollback configs. Creature module docstring: "This package will grow as we port creature_* logic from the original binary."
+- **Fix:** Document which bugs are preserved and plan to remove the flag.
+
+### 5. Error strategy inconsistency
+- **Severity:** Medium
+- **Files:** Network vs CLI modules
+- **Issue:** RollbackRuntime uses `error: str = ""` field pattern while CLI uses standard Python exceptions.
+- **Fix:** Unify error handling approach across boundaries.
 
 ## Positive Highlights
 
-This codebase demonstrates several practices rarely seen at this quality level in open-source game projects:
-
-- **Zero TODOs/FIXMEs** — every known issue is tracked externally, not littered in source
-- **Only 3 `type: ignore` annotations** across 82K lines of Python — exceptional type discipline
-- **Custom ast-grep rules** (30+ rules) enforcing project-specific invariants like no raw float conversions, no getattr fallbacks, and no swallowed exceptions
-- **Float32 bit-level parity** — constants are specified as exact IEEE 754 bit patterns (`0x40490FDB` for pi) to match the original binary's behavior
-- **37K lines of tests** with differential replay verification against the original game binary
-- **Comprehensive documentation** covering struct layouts, format specs, and algorithmic parity tracking
-- **Clean architecture**: `grim/` engine layer cleanly separated from `crimson/` game logic; `msgspec` structs throughout instead of ad-hoc dicts
+- **Import linter contracts** enforce architectural boundaries between grim/crimson and within perk subsystem
+- **Zero AI-generated debt** — code shows deep domain understanding and consistent hand-written style
+- **Excellent security posture** at 96.5% — rare for a game project
+- **Strong code quality** at 91.7% with msgspec structs throughout
+- **Modern tooling**: ruff, ty type checker, pytest with syrupy snapshots, import-linter
+- **Clean package architecture**: 71 directories with clear domain separation
 
 ## Summary
 
-banteg/crimson is one of the cleanest large-scale Python game projects in the open-source ecosystem. The main issues are concentrated file sizes in a few hot-path modules — a natural consequence of meticulous reverse engineering work where behavioral fidelity to the original binary takes priority over textbook decomposition. The Zig runtime mirrors this discipline with careful float32 narrowing and zero panics in game logic. At 14/100 sloppy, this codebase sets a high bar for what AI-assisted reverse engineering projects can achieve.
-
-## Tweet Thread Draft
-See campaigns/tweets/banteg-crimson.txt
+banteg/crimson scores **77.4/100 strict** — a strong result for a 132K LOC game project. The codebase demonstrates genuine craftsmanship with enforced architectural boundaries, modern Python tooling, and minimal AI debt. The main drag is test coverage at 12.3%, which alone accounts for most of the score gap. The subjective review found solid fundamentals with room for improvement in error consistency, type safety around initialization patterns, and completing the ongoing migration from the original binary. This is a well-maintained project that would benefit most from test investment and cleaning up a few structural hotspots.
