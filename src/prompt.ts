@@ -140,11 +140,32 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     ].join("\n");
   }
 
+  const isCampaignTask = t.title.startsWith("Campaign:");
   const branchName = `task-${t.id}-${agentName}`;
   const branchRule = config.useWorktree
     ? "  - You are already in the correct workspace directory (git worktree)."
     : `  - You are in the workspace directory. First, run: git pull origin main && git checkout -b ${branchName} (or git checkout ${branchName} if it exists). Push to this branch.`;
-  const rules = [
+
+  const campaignRules = [
+    "RULES (CAMPAIGN TASK):",
+    branchRule,
+    "  - Git identity is pre-configured. Do not run git config.",
+    "  - Token file: ~/lota/.github-token (for git push auth).",
+    "  - Do NOT use TodoWrite tool. USE the Agent tool for parallel subtasks when the task is large.",
+    "  - Do NOT re-read the task via lota API. The task body is below.",
+    "  - Do NOT post plan comments. Your commit is the audit trail.",
+    "  - Use `gh` CLI for GitHub operations, NOT curl.",
+    "  - NEVER force push.",
+    "  - CAMPAIGN RULES:",
+    "    - Do NOT open issues or PRs on the target repo.",
+    "    - Clone the target repo to /tmp/ (shallow clone, --depth 1).",
+    "    - Write report to ~/lota/campaigns/reports/{owner}-{repo}.md",
+    "    - Write tweet draft to ~/lota/campaigns/tweets/{owner}-{repo}.txt",
+    "    - Keep tweets punchy: 'helping + light dunking' tone.",
+    "    - Commit reports to ~/lota and push.",
+  ].join("\n");
+
+  const bountyRules = [
     "RULES:",
     branchRule,
     "  - Git identity is pre-configured. Do not run git config.",
@@ -172,6 +193,8 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     "    Run `git fetch origin` first if the commit is not available locally.",
     "  - SIGNATURE: When creating PRs, end the body with: Generated with [Lota](https://github.com/xliry/lota)",
   ].join("\n");
+
+  const rules = isCampaignTask ? campaignRules : bountyRules;
 
   const workflow = [
     "WORKFLOW:",
