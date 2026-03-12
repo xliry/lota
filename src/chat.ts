@@ -9,9 +9,11 @@ import type { AgentConfig } from "./types.js";
 let chatTimer: ReturnType<typeof setInterval> | null = null;
 let chatBusy = false;
 const chatBaselines = new Map<number, number>();
+const notifiedCompletions = new Set<number>();
 
 interface SyncResult {
   in_progress: Array<{ id: number; title: string; comment_count?: number }>;
+  recently_completed: Array<{ id: number; title: string }>;
 }
 
 interface TaskDetail {
@@ -147,6 +149,25 @@ async function chatPoll(config: AgentConfig): Promise<void> {
           chatBaselines.set(dm.id, updated.comments?.length ?? currentCount);
         } catch (e) {
           logNonCritical(`refresh chat baseline for DM #${dm.id}`, e);
+        }
+      }
+    }
+
+    // ── Notify DMs about completed tasks ────────────────────────
+    const completed = (data.recently_completed || []).filter(t => !t.title.startsWith("DM:"));
+    for (const task of completed) {
+      if (notifiedCompletions.has(task.id)) continue;
+      notifiedCompletions.add(task.id);
+      for (const dm of dmTasks) {
+        try {
+          await lota("POST", `/tasks/${dm.id}/comment`, {
+            content: `✅ Task #${task.id} completed: ${task.title}`,
+          });
+          // Update baseline so we don't trigger on our own notification
+          const prev = chatBaselines.get(dm.id) ?? 0;
+          chatBaselines.set(dm.id, prev + 1);
+        } catch (e) {
+          logNonCritical(`notify DM #${dm.id} about task #${task.id}`, e);
         }
       }
     }
