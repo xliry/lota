@@ -9,12 +9,13 @@ import { checkForWork, refreshCommentBaselines } from "./comments.js";
 import { recoverStaleTasks, checkRuntimeStaleTasks } from "./recovery.js";
 import { runClaude, getCurrentProcess, resetBusy, wasRateLimited } from "./process.js";
 import { startChatLoop, stopChatLoop } from "./chat.js";
+import { startOrchestratorLoop, stopOrchestratorLoop } from "./orchestrator.js";
 import type { AgentConfig, AgentMode, WorkData } from "./types.js";
 
 const MS_PER_MINUTE = 60_000;
 
 // ── PID registry ─────────────────────────────────────────────────
-const AGENTS_DIR = join(LOG_DIR, ".agents");
+export const AGENTS_DIR = join(LOG_DIR, ".agents");
 mkdirSync(AGENTS_DIR, { recursive: true });
 
 function getPidFile(name: string): string {
@@ -192,6 +193,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
     stopped = true;
     log("Shutting down...");
     stopChatLoop();
+    stopOrchestratorLoop();
     if (activeAgentName) removePidFile(activeAgentName);
     if (cp) {
       cp.kill("SIGTERM");
@@ -387,6 +389,7 @@ async function main() {
   await recoverStaleTasks(config);
 
   startChatLoop(config);
+  startOrchestratorLoop(config);
 
   let emptyPolls = 0;
   let pollCycles = 0;

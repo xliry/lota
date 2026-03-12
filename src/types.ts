@@ -45,6 +45,19 @@ export interface WorkData {
   commentUpdates: CommentUpdate[];
 }
 
+export interface OrchestratorSnapshot {
+  tasks: Map<number, { status: string; commentCount: number; title: string; assignee: string | null }>;
+  agents: Set<string>;
+}
+
+export interface OrchestratorDelta {
+  newTasks: Array<{ id: number; title: string; status: string }>;
+  statusChanges: Array<{ id: number; title: string; from: string; to: string }>;
+  newComments: Array<{ id: number; title: string; count: number }>;
+  agentChanges: { online: string[]; offline: string[] };
+  completions: Array<{ id: number; title: string }>;
+}
+
 export interface ClaudeEvent {
   type: string;
   subtype?: string;
