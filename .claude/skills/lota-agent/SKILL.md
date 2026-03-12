@@ -40,22 +40,22 @@ If npm is missing:
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
 ```
 
-**If BUILT**, check for updates before starting agents:
+**If BUILT**, pull latest and always rebuild:
 
 ```bash
 cd ~/lota && git pull --ff-only origin main 2>&1 | tail -1
 ```
 
-- If output says "Already up to date." → skip build, continue silently
-- If output shows files changed → rebuild:
-  ```bash
-  cd ~/lota && npm run build 2>&1 | tail -1
-  ```
-  - If build succeeds → say briefly: "Updated Lota to latest." and continue
-  - If build fails → **ignore the error, continue with old code**. Do NOT block the user.
-- If git pull fails (network error, merge conflict) → **ignore silently, continue with old code**
+Then always rebuild (ensures dist matches src):
+```bash
+cd ~/lota && npm run build 2>&1 | tail -1
+```
 
-**IMPORTANT:** Do NOT let an update failure block the agent launch. Old code is always fine as fallback.
+- If build succeeds → continue silently (or say "Updated." if git pull showed changes)
+- If build fails → **ignore the error, continue with old code**. Do NOT block the user.
+- If git pull fails (network error, merge conflict) → still run `npm run build`, then continue
+
+**IMPORTANT:** Do NOT let an update or build failure block the agent launch. Old code is always fine as fallback.
 
 ---
 
