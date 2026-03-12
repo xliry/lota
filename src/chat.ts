@@ -8,6 +8,7 @@ import type { AgentConfig } from "./types.js";
 
 let chatTimer: ReturnType<typeof setInterval> | null = null;
 let chatBusy = false;
+let firstPoll = true;
 const chatBaselines = new Map<number, number>();
 const notifiedCompletions = new Set<number>();
 
@@ -155,19 +156,30 @@ async function chatPoll(config: AgentConfig): Promise<void> {
 
     // ── Notify DMs about completed tasks ────────────────────────
     const completed = (data.recently_completed || []).filter(t => !t.title.startsWith("DM:"));
-    for (const task of completed) {
-      if (notifiedCompletions.has(task.id)) continue;
-      notifiedCompletions.add(task.id);
-      for (const dm of dmTasks) {
-        try {
-          await lota("POST", `/tasks/${dm.id}/comment`, {
-            content: `✅ Task #${task.id} completed: ${task.title}`,
-          });
-          // Update baseline so we don't trigger on our own notification
-          const prev = chatBaselines.get(dm.id) ?? 0;
-          chatBaselines.set(dm.id, prev + 1);
-        } catch (e) {
-          logNonCritical(`notify DM #${dm.id} about task #${task.id}`, e);
+
+    if (firstPoll) {
+      // Baseline: mark all currently completed tasks as already notified
+      for (const task of completed) notifiedCompletions.add(task.id);
+      firstPoll = false;
+    } else {
+      // Collect new completions
+      const newCompletions = completed.filter(t => !notifiedCompletions.has(t.id));
+      for (const t of newCompletions) notifiedCompletions.add(t.id);
+
+      if (newCompletions.length && dmTasks.length) {
+        // Batch into a single comment per DM
+        const lines = newCompletions.map(t => `✅ #${t.id}: ${t.title}`);
+        const content = lines.join("\n");
+
+        for (const dm of dmTasks) {
+          try {
+            await lota("POST", `/tasks/${dm.id}/comment`, { content });
+            // Re-fetch to get accurate baseline after our comment
+            const updated = await lota("GET", `/tasks/${dm.id}`) as TaskDetail;
+            chatBaselines.set(dm.id, updated.comments?.length ?? 0);
+          } catch (e) {
+            logNonCritical(`notify DM #${dm.id} about completions`, e);
+          }
         }
       }
     }
