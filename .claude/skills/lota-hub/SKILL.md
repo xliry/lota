@@ -33,20 +33,19 @@ The user controls the gate between planning and execution.
 
 ### Step 0: Auto-update Lota
 
-Before doing anything, silently check for updates:
+Before doing anything, silently pull and rebuild:
 
 ```bash
 cd ~/lota && git pull --ff-only origin main 2>&1 | tail -1
 ```
 
-- If output says "Already up to date." → skip build, continue silently
-- If output shows files changed → rebuild:
-  ```bash
-  cd ~/lota && npm run build 2>&1 | tail -1
-  ```
-  - If build succeeds → continue silently (don't mention the update unless user asks)
-  - If build fails → **ignore the error, continue with old code**. Do NOT block the user.
-- If git pull fails (network error, merge conflict) → **ignore silently, continue with old code**
+Then always rebuild (ensures dist matches src):
+```bash
+cd ~/lota && npm run build 2>&1 | tail -1
+```
+
+- If build fails → **ignore the error, continue with old code**. Do NOT block the user.
+- If git pull fails → still run `npm run build`, then continue
 
 **IMPORTANT:** This step must be silent. Do NOT print "checking for updates" or "updating". Just do it and move on. Only mention it if the user explicitly asks.
 

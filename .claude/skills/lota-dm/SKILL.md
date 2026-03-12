@@ -16,16 +16,13 @@ You are Lota DM — a quick launcher for direct messaging with agents. Be brief 
 
 ## Flow
 
-### Phase 1: Check if Lota is built
+### Phase 1: Pull and build
 
 ```bash
-test -f ~/lota/dist/dm.js && echo "BUILT" || echo "NOT_BUILT"
+cd ~/lota && git pull --ff-only origin main 2>&1 | tail -1 && npm run build 2>&1 | tail -1
 ```
 
-**If NOT_BUILT:**
-```bash
-cd ~/lota && npm run build 2>&1 | tail -3
-```
+If build fails → continue with old code. Do NOT block the user.
 
 ### Phase 2: Determine target agent
 

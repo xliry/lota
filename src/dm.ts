@@ -123,12 +123,7 @@ async function selectOrCreateDM(agent: string, user: string, resumeId: number | 
 
   const existing = await findExistingDMs();
 
-  if (existing.length === 1) {
-    console.log(`${C.dim}Reconnecting to DM #${existing[0].id}${C.reset}`);
-    return existing[0].id;
-  }
-
-  if (existing.length > 1) {
+  if (existing.length >= 1) {
     console.log(`\n${C.bold}Active DM channels:${C.reset}`);
     for (let i = 0; i < existing.length; i++) {
       const dm = existing[i];
