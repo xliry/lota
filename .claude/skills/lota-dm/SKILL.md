@@ -5,7 +5,7 @@ description: >
   talk to the agent in real-time via GitHub Issues. Use when the user says "lota dm",
   "dm agent", "chat with agent", "message agent", "talk to lota", or wants to start a
   direct conversation with an agent.
-allowed-tools: Bash(node *), Bash(cd * && node *), Bash(tmux *), Bash(ls *), Read, mcp__lota__lota
+allowed-tools: Bash(cd * && npm *), Bash(cd * && git *), Bash(ls *), Bash(tmux *), Read
 ---
 
 # Lota DM
@@ -35,7 +35,7 @@ If not specified:
 ls ~/lota/.agents/*.pid 2>/dev/null
 ```
 - If `lota-chat.pid` exists → use `lota-chat`
-- If 1 agent → use it
+- If 1 agent → use it (extract name from filename, e.g. `lota-1.pid` → `lota-1`)
 - If multiple (no lota-chat) → ask: "Which agent?"
 - If none → default to `lota-1`
 
@@ -45,29 +45,21 @@ Ask: "What's your name? (for the chat header)"
 
 Default to "user" if they skip.
 
-### Phase 4: Start DM
+### Phase 4: Show the command
 
-Check if agents tmux session is running:
+**Do NOT run dm.js yourself.** It is an interactive terminal app that needs direct stdin access.
 
+Just show the user the command to run:
+
+> Run this in your terminal:
+> ```
+> node ~/lota/dist/dm.js --agent <agent-name> --user <username>
+> ```
+
+If agents tmux session is running:
 ```bash
 tmux has-session -t lota-agents 2>/dev/null && echo "TMUX_RUNNING" || echo "TMUX_NONE"
 ```
+- If TMUX_RUNNING → also show: `Watch agent: tmux a -t lota-agents`
 
-**If TMUX_RUNNING:**
-- Show: `Watch: tmux a -t lota-agents`
-
-Start the DM client:
-
-```bash
-node ~/lota/dist/dm.js --agent <agent-name> --user <username>
-```
-
-This starts an interactive chat session. The user types messages, they go to a GitHub Issue,
-the agent sees them and responds.
-
-**That's it. Do NOT run anything else.**
-
-### Reconnect
-
-If the user already has an active DM, `dm.js` will automatically reconnect to the existing
-DM issue instead of creating a new one.
+**That's it. Do NOT run dm.js via Bash tool. Just print the command.**
