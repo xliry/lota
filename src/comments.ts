@@ -100,6 +100,8 @@ function detectCommentUpdates(
   const MAX_NEW_COMMENTS = 20; // skip spam — likely crash retry loops
   const updates: CommentUpdate[] = [];
   for (const task of tasks) {
+    // Skip DM issues — chat loop handles them
+    if (task.title.startsWith("DM:")) continue;
     const lastSeen = lastSeenComments.get(task.id) ?? -1;
     const currentCount = task.comment_count ?? 0;
     if (lastSeen === -1) {

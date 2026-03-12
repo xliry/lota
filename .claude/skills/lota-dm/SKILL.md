@@ -33,13 +33,7 @@ If the user specified an agent name (e.g. "dm lota-2", "chat with lota-3"):
 - Use that agent name
 
 If not specified:
-- Check which agents are running:
-```bash
-ls ~/lota/.agents/*.pid 2>/dev/null
-```
-- If 1 agent → use it
-- If multiple → ask: "Which agent? (lota-1, lota-2, lota-3)"
-- If none → default to `lota-1`
+- Default to `lota-chat`
 
 ### Phase 3: Ask for username
 
@@ -49,9 +43,29 @@ Default to "user" if they skip.
 
 ### Phase 4: Start DM
 
+Check if lota-chat tmux session is already running:
+
+```bash
+tmux has-session -t lota-chat 2>/dev/null && echo "TMUX_RUNNING" || echo "TMUX_NONE"
+```
+
+**If TMUX_RUNNING:**
+- Show: "lota-chat is already running."
+- Show: `Watch: tmux a -t lota-chat`
+- Then start the DM client:
+
 ```bash
 node ~/lota/dist/dm.js --agent <agent-name> --user <username>
 ```
+
+**If TMUX_NONE:**
+- Start the DM client directly:
+
+```bash
+node ~/lota/dist/dm.js --agent <agent-name> --user <username>
+```
+
+- After starting, show: `Watch: tmux a -t lota-chat`
 
 This starts an interactive chat session. The user types messages, they go to a GitHub Issue,
 the agent sees them and responds.

@@ -8,6 +8,7 @@ import { LOG_FILE, LOG_DIR, log, ok, dim, err, logNonCritical, writeLog, logMemo
 import { checkForWork, refreshCommentBaselines } from "./comments.js";
 import { recoverStaleTasks, checkRuntimeStaleTasks } from "./recovery.js";
 import { runClaude, getCurrentProcess, resetBusy, wasRateLimited } from "./process.js";
+import { startChatLoop, stopChatLoop } from "./chat.js";
 import type { AgentConfig, AgentMode, WorkData } from "./types.js";
 
 const MS_PER_MINUTE = 60_000;
@@ -103,7 +104,7 @@ function parseArgs(): AgentConfig {
   const args = process.argv.slice(2);
   let interval = 15, once = false, mcpConfig = "", model = "sonnet";
   let mode: AgentMode = "auto", maxTasksPerCycle = 1, singlePhaseOverride: boolean | null = null;
-  let maxRssMb = 1024, nameOverride = "", useWorktree = false;
+  let maxRssMb = 1024, nameOverride = "", useWorktree = false, chatInterval = 3;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -118,6 +119,7 @@ function parseArgs(): AgentConfig {
       case "--max-rss": maxRssMb = parseInt(args[++i], 10); break;
       case "--name": case "-n": nameOverride = args[++i]; break;
       case "--worktree": useWorktree = true; break;
+      case "--chat-interval": chatInterval = parseInt(args[++i], 10); break;
       case "--help": case "-h":
         console.log(`Usage: lota-agent [options]
 
@@ -134,6 +136,7 @@ Options:
   --single-phase        Merge plan+execute into one Claude invocation (default: off — plan first, then execute)
   --no-single-phase     Use separate plan→approve→execute phases (this is now the default)
   --worktree            Use git worktree isolation (default: simple branch strategy)
+  --chat-interval <sec> Chat loop poll interval in seconds (default: 3)
   -1, --once            Run once then exit
   -h, --help            Show this help`);
         process.exit(0);
@@ -169,7 +172,7 @@ Options:
   }
 
   const creds = loadCredentials(configPath, nameOverride);
-  return { configPath, model, interval, once, mode, singlePhase, maxTasksPerCycle, maxRssMb, useWorktree, ...creds };
+  return { configPath, model, interval, once, mode, singlePhase, maxTasksPerCycle, maxRssMb, useWorktree, chatInterval, ...creds };
 }
 
 // ── Shutdown ─────────────────────────────────────────────────────
@@ -188,6 +191,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
     }
     stopped = true;
     log("Shutting down...");
+    stopChatLoop();
     if (activeAgentName) removePidFile(activeAgentName);
     if (cp) {
       cp.kill("SIGTERM");
@@ -381,6 +385,8 @@ async function main() {
   }
 
   await recoverStaleTasks(config);
+
+  startChatLoop(config);
 
   let emptyPolls = 0;
   let pollCycles = 0;

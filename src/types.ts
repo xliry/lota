@@ -15,6 +15,7 @@ export interface AgentConfig {
   telegramChatId: string;
   maxRssMb: number;
   useWorktree: boolean;
+  chatInterval: number;
 }
 
 export interface TaskInfo {
