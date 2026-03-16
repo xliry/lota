@@ -70,6 +70,7 @@ interface SyncTask {
   status: string;
   assignee: string | null;
   comment_count?: number;
+  workspace?: string | null;
 }
 
 interface SyncData {
@@ -83,7 +84,7 @@ interface SyncData {
 
 // ── Snapshot building ───────────────────────────────────────────
 function buildSnapshot(syncData: SyncData, agents: Set<string>): OrchestratorSnapshot {
-  const tasks = new Map<number, { status: string; commentCount: number; title: string; assignee: string | null }>();
+  const tasks = new Map<number, { status: string; commentCount: number; title: string; assignee: string | null; workspace: string | null }>();
 
   const allTasks = [
     ...syncData.assigned,
@@ -100,6 +101,7 @@ function buildSnapshot(syncData: SyncData, agents: Set<string>): OrchestratorSna
       commentCount: t.comment_count ?? 0,
       title: t.title,
       assignee: t.assignee,
+      workspace: t.workspace ?? null,
     });
   }
 
@@ -118,6 +120,8 @@ function computeDelta(prev: OrchestratorSnapshot, curr: OrchestratorSnapshot): O
 
   // New tasks
   for (const [id, task] of curr.tasks) {
+    // Skip DM channels — chat activity is not a task event
+    if (task.title.startsWith("DM:")) continue;
     if (!prev.tasks.has(id)) {
       delta.newTasks.push({ id, title: task.title, status: task.status });
     }
@@ -125,6 +129,7 @@ function computeDelta(prev: OrchestratorSnapshot, curr: OrchestratorSnapshot): O
 
   // Status changes & new comments
   for (const [id, task] of curr.tasks) {
+    if (task.title.startsWith("DM:")) continue;
     const prevTask = prev.tasks.get(id);
     if (!prevTask) continue;
 
@@ -268,8 +273,14 @@ async function orchestratorPoll(config: AgentConfig): Promise<void> {
 
     await runOrchestratorClaude(prompt, config);
 
-    // Update snapshot after successful cycle
-    lastSnapshot = current;
+    // Re-fetch snapshot after Claude runs to capture any changes it made
+    // (comments posted, statuses changed) — prevents false deltas next poll
+    try {
+      const freshSync = await lota("GET", "/sync?all=true") as SyncData;
+      lastSnapshot = buildSnapshot(freshSync, discoverAgents());
+    } catch {
+      lastSnapshot = current;
+    }
   } catch (e) {
     logNonCritical("orchestrator poll", e);
   } finally {
@@ -277,10 +288,26 @@ async function orchestratorPoll(config: AgentConfig): Promise<void> {
   }
 }
 
+// ── Leader election (lowest agent name wins) ───────────────────
+function isOrchestratorLeader(myName: string): boolean {
+  const agents = discoverAgents();
+  if (agents.size === 0) return true;
+  const sorted = [...agents].sort();
+  return sorted[0] === myName;
+}
+
 // ── Public API ──────────────────────────────────────────────────
 export function startOrchestratorLoop(config: AgentConfig): void {
-  ok("Orchestrator loop started (60s interval)");
-  orchestratorTimer = setInterval(() => orchestratorPoll(config), ORCHESTRATOR_INTERVAL_MS);
+  orchestratorTimer = setInterval(() => {
+    if (!isOrchestratorLeader(config.agentName)) return;
+    orchestratorPoll(config);
+  }, ORCHESTRATOR_INTERVAL_MS);
+  // Check immediately if we're leader
+  if (isOrchestratorLeader(config.agentName)) {
+    ok("Orchestrator loop started (60s interval, this agent is leader)");
+  } else {
+    dim("Orchestrator loop started (60s interval, deferring to leader)");
+  }
 }
 
 export function stopOrchestratorLoop(): void {

@@ -18,11 +18,26 @@ function gitExec(cmd: string, cwd: string): { ok: boolean; output: string } {
   }
 }
 
-/** Build a token-authenticated push URL from GITHUB_TOKEN + GITHUB_REPO env vars. */
-function tokenPushUrl(): string | null {
+/** Build a token-authenticated push URL. Derives repo from git remote (not GITHUB_REPO, which may be the issues repo). */
+function tokenPushUrl(cwd?: string): string | null {
   const token = process.env.GITHUB_TOKEN;
+  if (!token) return null;
+
+  // Derive repo from actual git remote URL — GITHUB_REPO may point to a different repo (e.g. issues-only repo)
+  if (cwd) {
+    const r = gitExec("git remote get-url origin", cwd);
+    if (r.ok) {
+      const url = r.output.trim();
+      // Already has token auth — use as-is
+      if (url.includes("x-access-token:")) return url;
+      const match = url.match(/github\.com[/:](.+?)(?:\.git)?$/);
+      if (match) return `https://x-access-token:${token}@github.com/${match[1]}.git`;
+    }
+  }
+
+  // Fallback to GITHUB_REPO
   const repo = process.env.GITHUB_REPO;
-  if (!token || !repo) return null;
+  if (!repo) return null;
   return `https://x-access-token:${token}@github.com/${repo}.git`;
 }
 
@@ -91,7 +106,7 @@ export function deleteBranch(cwd: string, branch: string): boolean {
 
 /** Delete a remote-tracking branch. Uses token auth when GITHUB_TOKEN is set. */
 export function deleteRemoteBranch(cwd: string, branch: string): boolean {
-  const url = tokenPushUrl();
+  const url = tokenPushUrl(cwd);
   const remote = url || "origin";
   const r = gitExec(`git push ${remote} --delete "${branch}"`, cwd);
   if (!r.ok) dim(`[git] push --delete "${branch}" failed: ${r.output.slice(0, 120)}`);
@@ -123,7 +138,7 @@ export function pull(cwd: string, remote = "origin", branch = "main"): boolean {
 
 /** Push to remote. Uses token auth when GITHUB_TOKEN is set. */
 export function push(cwd: string, args = "origin HEAD"): boolean {
-  const url = tokenPushUrl();
+  const url = tokenPushUrl(cwd);
   if (url && args.startsWith("origin")) {
     const rest = args.slice("origin".length).trim();
     const r = gitExec(`git push ${url} ${rest}`, cwd);

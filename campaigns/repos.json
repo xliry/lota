@@ -9,10 +9,10 @@
   },
   {
     "url": "https://github.com/banteg/crimson",
-    "status": "completed",
+    "status": "queued",
     "priority": "medium",
-    "notes": "User requested analysis",
+    "notes": "Re-run with real desloppify CLI",
     "added": "2026-03-10",
-    "task": "#556"
+    "task": "#558"
   }
 ]

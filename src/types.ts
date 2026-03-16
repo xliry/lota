@@ -46,7 +46,7 @@ export interface WorkData {
 }
 
 export interface OrchestratorSnapshot {
-  tasks: Map<number, { status: string; commentCount: number; title: string; assignee: string | null }>;
+  tasks: Map<number, { status: string; commentCount: number; title: string; assignee: string | null; workspace: string | null }>;
   agents: Set<string>;
 }
 

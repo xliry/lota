@@ -77,107 +77,86 @@ def create_campaign_task(owner: str, repo: str, notes: str = "") -> str | None:
 ### Instructions
 
 You are running a desloppify analysis on a public GitHub repo for a Twitter content campaign.
-Do NOT open issues or PRs on the target repo. Generate a report and tweet draft only.
+Do NOT open issues or PRs on the target repo. Use the real desloppify CLI tool — do NOT invent your own scores or analysis.
 
 ### Step 1 — Clone the target repo
 
 ```bash
 cd /tmp && rm -rf campaign-{repo} && git clone --depth 1 https://github.com/{owner}/{repo}.git campaign-{repo}
+cd /tmp/campaign-{repo}
 ```
 
-### Step 2 — Run desloppify analysis
+### Step 2 — Install and set up desloppify
 
-Clone or update desloppify if needed:
 ```bash
-test -d ~/desloppify || git clone https://github.com/xliry/desloppify.git ~/desloppify
+pip install --upgrade "desloppify[full]"
+desloppify update-skill claude
 ```
 
-Run the analysis on the cloned repo. Read through the codebase systematically:
-1. Identify the main language(s) and framework(s)
-2. Read key files: entry points, config, core modules
-3. Look for poor engineering patterns:
-   - No error handling / silent failures
-   - Security vulnerabilities (injection, hardcoded secrets, etc.)
-   - Race conditions / concurrency issues
-   - Memory leaks / resource leaks
-   - Dead code / unused imports at scale
-   - God classes / functions (>500 lines)
-   - No input validation at system boundaries
-   - Inconsistent patterns (mix of styles without reason)
-   - Missing type safety where it matters
-   - Copied code instead of abstractions (>3 duplicates)
+### Step 3 — Exclude non-source directories
 
-4. Assign a **Sloppy Score** (0-100):
-   - 0-20: Clean, well-engineered
-   - 21-40: Minor issues, generally solid
-   - 41-60: Notable problems, needs work
-   - 61-80: Seriously sloppy, major issues
-   - 81-100: Dumpster fire
+Before scanning, check for directories that should be excluded (vendor, build output, generated code, node_modules, dist, .next, etc.) and exclude obvious ones:
 
-### Step 3 — Generate report
-
-Write the full report to `~/lota/campaigns/reports/{owner}-{repo}.md` using this format:
-
-```markdown
-# Desloppify Report: {owner}/{repo}
-
-**Sloppy Score:** X/100
-**Date:** YYYY-MM-DD
-**Analyzed by:** Lota
-**Repo:** https://github.com/{owner}/{repo}
-
-## Overview
-Brief description of what the project is and its tech stack.
-
-## Top Findings
-
-### 1. [Finding Title]
-- **Severity:** high/medium/low
-- **File:** path/to/file.py:42
-- **Issue:** Clear description of the problem
-- **Fix:** What should be done
-
-### 2. [Finding Title]
-...
-
-### 3. [Finding Title]
-...
-
-(Include up to 5 findings, ranked by severity)
-
-## Summary
-2-3 sentences summarizing the analysis, suitable for Twitter.
+```bash
+desloppify exclude node_modules
+desloppify exclude dist
+desloppify exclude build
+desloppify exclude .next
 ```
 
-### Step 4 — Generate tweet thread draft
+Check `ls` output and exclude any other obvious non-source directories.
 
-Write a tweet thread to `~/lota/campaigns/tweets/{owner}-{repo}.txt`:
+### Step 4 — Scan the repo
+
+```bash
+desloppify scan --path .
+```
+
+Read the scan output carefully. It includes agent instructions — follow them exactly.
+
+### Step 5 — The Fix Loop
+
+Run `desloppify next`. It tells you what to fix, which file, and the resolve command to run when done.
+
+**THE LOOP:**
+1. `desloppify next` — get the next issue
+2. Fix it properly (not minimally)
+3. Run the resolve command shown by `next`
+4. Repeat
+
+Don't be lazy. Large refactors and small detailed fixes — do both with equal energy.
+Use `desloppify plan` to reorder priorities or cluster related issues.
+Rescan periodically with `desloppify scan --path .`
+
+Your goal is to get the strict score as high as possible. The scoring resists gaming — the only way to improve it is to actually make the code better.
+
+**IMPORTANT:** Do NOT substitute your own analysis. The scan output IS the analysis. Follow it.
+
+### Step 6 — Save results
+
+When the strict score is as high as you can get it, save the final scan output:
+
+```bash
+desloppify scan --path . > ~/lota/campaigns/reports/{owner}-{repo}.md
+```
+
+Also generate a tweet thread draft at `~/lota/campaigns/tweets/{owner}-{repo}.txt` based on the real desloppify findings. Keep tweets punchy and engaging. Tone: "helping + light dunking" — point out real problems, not style preferences.
 
 ```
 TWEET 1 (hook — max 280 chars):
-We ran desloppify on {owner}/{repo}.
-Sloppy Score: X/100.
-Here's the thread...
+We ran @desloppify on {owner}/{repo}. Strict score: X. Here's what we found...
 
 TWEET 2 (worst finding — include code snippet if short):
-The worst thing we found: [finding title]
-[2-3 line code snippet]
-[Why it's bad in one sentence]
+[Use actual findings from desloppify scan]
 
 TWEET 3 (more findings):
-Also found:
-- [Finding 2 one-liner]
-- [Finding 3 one-liner]
-These aren't style nitpicks — real engineering problems.
+[Use actual findings from desloppify scan]
 
 TWEET 4 (CTA):
-Full report + all findings: [link]
-Run desloppify on your own repo: github.com/peteromallet/desloppify
+Run desloppify on YOUR repo: pip install desloppify
 ```
 
-Keep tweets punchy and engaging. The tone is "helping + light dunking" — point out real problems, not style preferences.
-
-### Step 5 — Commit and push reports
+### Step 7 — Commit and push
 
 ```bash
 cd ~/lota && git add campaigns/reports/{owner}-{repo}.md campaigns/tweets/{owner}-{repo}.txt
@@ -185,9 +164,9 @@ git commit -m "campaign: desloppify report for {owner}/{repo}"
 git push
 ```
 
-### Step 6 — Complete the task
+### Step 8 — Complete the task
 
-Report which files were created and the sloppy score.
+Report the final strict score and which files were created.
 
 <!-- lota:v1:meta {{"workspace":"~/lota"}} -->
 """

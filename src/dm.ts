@@ -178,8 +178,8 @@ function formatComment(c: Comment, agentName: string, userName: string): string 
   const nameColor = mine ? C.cyan : C.magenta;
   const label = mine ? userName : agentName;
   const body = c.body.replace(/<!-- .*?-->/gs, "").trim();
-  const preview = body.split("\n").slice(0, 8).join("\n  ");
-  return `  ${C.dim}${time}${C.reset} ${nameColor}${label}${C.reset}: ${preview}`;
+  const indented = body.split("\n").join("\n  ");
+  return `  ${C.dim}${time}${C.reset} ${nameColor}${label}${C.reset}: ${indented}`;
 }
 
 function printHeader(dmId: number, agent: string): void {
@@ -188,9 +188,31 @@ function printHeader(dmId: number, agent: string): void {
   console.log("──────────────────────────────────");
 }
 
+// ── Paste debounce ───────────────────────────────────────────
+let lineBuffer: string[] = [];
+let sendTimer: ReturnType<typeof setTimeout> | null = null;
+const DEBOUNCE_MS = 150;
+
+async function flushBuffer(dmId: number, rl: ReturnType<typeof createInterface>): Promise<void> {
+  if (lineBuffer.length === 0) return;
+  const message = lineBuffer.join("\n");
+  lineBuffer = [];
+  sendTimer = null;
+  polling = false;
+  try {
+    await lota("POST", `/tasks/${dmId}/comment`, { content: `${message}\n\n${DM_MARKER}` });
+    knownCommentCount++;
+  } catch (e) {
+    console.error(`${C.red}Send error: ${(e as Error).message}${C.reset}`);
+  }
+  polling = true;
+  rl.prompt();
+}
+
 // ── Polling ──────────────────────────────────────────────────
 const POLL_INTERVAL = 5_000;
 let knownCommentCount = 0;
+let polling = true;
 
 async function poll(dmId: number, agent: string, userName: string, rl: ReturnType<typeof createInterface>): Promise<void> {
   try {
@@ -257,30 +279,26 @@ async function main(): Promise<void> {
   });
 
   // Start polling
-  let polling = true;
   const timer = setInterval(() => { if (polling) poll(dmId, agent, user, rl); }, POLL_INTERVAL);
 
   rl.prompt();
 
-  rl.on("line", async (line) => {
+  rl.on("line", (line) => {
     const trimmed = line.trim();
-    if (!trimmed) { rl.prompt(); return; }
 
     if (trimmed === "quit" || trimmed === "exit" || trimmed === "q") {
+      if (sendTimer) clearTimeout(sendTimer);
+      if (lineBuffer.length > 0) {
+        flushBuffer(dmId, rl).then(() => process.exit(0));
+        return;
+      }
       console.log(`${C.dim}Bye!${C.reset}`);
       process.exit(0);
     }
 
-    polling = false;
-    try {
-      // Send with hidden marker so we can identify our own messages
-      await lota("POST", `/tasks/${dmId}/comment`, { content: `${trimmed}\n\n${DM_MARKER}` });
-      knownCommentCount++;
-    } catch (e) {
-      console.error(`${C.red}Send error: ${(e as Error).message}${C.reset}`);
-    }
-    polling = true;
-    rl.prompt();
+    lineBuffer.push(line);
+    if (sendTimer) clearTimeout(sendTimer);
+    sendTimer = setTimeout(() => flushBuffer(dmId, rl), DEBOUNCE_MS);
   });
 
   rl.on("close", () => {
