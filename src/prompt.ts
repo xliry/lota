@@ -72,14 +72,26 @@ function warnIfNotGitRoot(dir: string): void {
   }
 }
 
+// ── Tool name helper (Claude uses "lota", Gemini uses "mcp_lota_lota") ──
+function toolCall(config: AgentConfig): { name: string; fn: (method: string, path: string, body?: string) => string } {
+  const name = config.cli === "gemini" ? "mcp_lota_lota" : "lota";
+  return {
+    name,
+    fn: (method: string, path: string, body?: string) =>
+      body ? `${name}({method: "${method}", path: "${path}", body: ${body}})` : `${name}("${method}", "${path}")`,
+  };
+}
+
 // ── Prompt builder ───────────────────────────────────────────────
 export function buildPrompt(agentName: string, work: WorkData, config: AgentConfig): string {
+  const tool = toolCall(config);
+
   if (work.phase === "comments") {
     const dmUpdates = work.commentUpdates.filter(cu => cu.title.startsWith("DM:"));
     const taskUpdates = work.commentUpdates.filter(cu => !cu.title.startsWith("DM:"));
 
     const parts: string[] = [
-      `You are agent "${agentName}". Your MCP tool is lota().`,
+      `You are agent "${agentName}". Your MCP tool is ${tool.name}().`,
       "",
     ];
 
@@ -90,7 +102,7 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
       parts.push(
         "DIRECT MESSAGES — Someone is chatting with you live. Read and reply conversationally.",
         "  - Be concise, friendly, and helpful.",
-        "  - Reply with lota(\"POST\", \"/tasks/<id>/comment\", {content: \"...\"}).",
+        `  - Reply with ${tool.fn("POST", "/tasks/<id>/comment", '{content: "..."}')}.`,
         "  - Do NOT post plans, status updates, or completion reports.",
         "  - Do NOT use <!-- lota: --> metadata tags in your replies.",
         "  - This is a conversation, not a task. Just chat.",
@@ -126,13 +138,13 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
 
   if (work.phase === "plan") {
     return [
-      `You are agent "${agentName}". Your MCP tool is lota().`,
+      `You are agent "${agentName}". Your MCP tool is ${tool.name}().`,
       "",
       "PLAN PHASE — Explore, then plan. Do NOT execute code.",
       "",
       "WORKFLOW:",
-      `  1. lota("POST", "/tasks/${t.id}/plan", {goals: [...], affected_files: [...], effort: "..."})`,
-      `  2. lota("POST", "/tasks/${t.id}/status", {status: "planned"})`,
+      `  1. ${tool.fn("POST", `/tasks/${t.id}/plan`, '{goals: [...], affected_files: [...], effort: "..."}')}`,
+      `  2. ${tool.fn("POST", `/tasks/${t.id}/status`, '{status: "planned"}')}`,
       "  3. STOP. User will approve via Hub before you execute.",
       "",
       taskHeader,
@@ -204,9 +216,9 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
 
   const workflow = [
     "WORKFLOW:",
-    `  1. lota("POST", "/tasks/${t.id}/status", {status: "in-progress"})`,
+    `  1. ${tool.fn("POST", `/tasks/${t.id}/status`, '{status: "in-progress"}')}`,
     "  2. Do the work. Build. Test. Commit. Push.",
-    `  3. lota("POST", "/tasks/${t.id}/complete", {summary: "..."})`,
+    `  3. ${tool.fn("POST", `/tasks/${t.id}/complete`, '{summary: "..."}')}`,
   ].join("\n");
 
   if (work.phase === "execute") {
@@ -217,7 +229,7 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
       ? "\nFILES:\n" + t.plan.affected_files.map(f => `  - ${f}`).join("\n")
       : "";
     return [
-      `You are agent "${agentName}". Your MCP tool is lota().`,
+      `You are agent "${agentName}". Your MCP tool is ${tool.name}().`,
       "",
       workflow,
       "",
@@ -232,7 +244,7 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
 
   // PHASE: SINGLE (auto mode)
   return [
-    `You are agent "${agentName}". Your MCP tool is lota().`,
+    `You are agent "${agentName}". Your MCP tool is ${tool.name}().`,
     "",
     workflow,
     "",

@@ -402,8 +402,8 @@ lota("POST", "/tasks", {
   "title": "Video analiz: transkript + timeline + görsel analiz",
   "assign": "<gemini-agent>",
   "priority": "high",
-  "workspace": "~/my-video",
-  "body": "## Analiz görevi\n\nVideo: <dosya-yolu>\n\n## Shared skill oku\n~/.lota/shared/skills/video-analyze.md dosyasını oku ve formatına uy.\n\n## Çıktı\n/tmp/video-analysis-{task_id}.json dosyasına yaz.\n\n## Kurallar\n- Transkript Türkçe slang'e sadık kalsın\n- Word-by-word subtitle timeline çıkar\n- Her sahneyi görsel olarak analiz et\n- Ekrandaki tüm text'leri çıkar\n- Grid prompt önerileri yaz\n- Remotion template öner"
+  "workspace": "~/gemini-staging",
+  "body": "## Analysis task\n\nVideo: <file-path> (copy to ~/gemini-staging/ first)\n\n## Instructions\nRead ~/.lota/shared/skills/video-analyze.md and follow its format exactly.\n\nIMPORTANT: Run Gemini CLI from ~/gemini-staging/ — NOT from any project directory.\nGemini reads all files in its working directory. Running from ~/my-video/ causes it to read .mjs/.ts files and go off track.\n\n## Output\nWrite to /tmp/video-analysis-{task_id}.json\n\n## Rules\n- Keep transcript slang intact\n- Word-by-word subtitle timeline\n- Visual scene analysis for each scene\n- Extract all on-screen text\n- Grid prompt suggestions\n- Template extraction (not recommendation)"
 })
 ```
 

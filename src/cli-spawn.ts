@@ -37,7 +37,7 @@ export function buildCliArgs(
         "-p", finalPrompt,
         "-o", "stream-json",
         "-y",
-        ...(config.model ? ["--model", config.model] : []),
+        ...(config.model && config.model !== "auto" ? ["--model", config.model] : []),
       ],
     };
   }

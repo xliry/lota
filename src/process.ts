@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { lota } from "./github.js";
@@ -13,12 +13,25 @@ import type { AgentConfig, WorkData } from "./types.js";
 let currentProcess: ChildProcess | null = null;
 let busy = false;
 let lastRunRateLimited = false;
+let lastRateLimitResetMinutes = 0;
 
 export function getCurrentProcess(): ChildProcess | null { return currentProcess; }
 export function resetBusy(): void { busy = false; }
 export function wasRateLimited(): boolean { return lastRunRateLimited; }
+export function getRateLimitResetMinutes(): number { return lastRateLimitResetMinutes; }
 
-const RATE_LIMIT_PATTERNS = /rate.?limit|429|overloaded|too many requests|retry.?after/i;
+const RATE_LIMIT_PATTERNS = /rate.?limit|429|overloaded|too many requests|retry.?after|exhausted your capacity|quota.?reset/i;
+
+// Parse Gemini's "Your quota will reset after 20h59m50s" or "after 3s"
+const GEMINI_RESET_RE = /quota will reset after\s+(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/i;
+function parseGeminiResetTime(text: string): number {
+  const m = GEMINI_RESET_RE.exec(text);
+  if (!m) return 0;
+  const hours = parseInt(m[1] || "0", 10);
+  const mins = parseInt(m[2] || "0", 10);
+  const secs = parseInt(m[3] || "0", 10);
+  return hours * 60 + mins + Math.ceil(secs / 60);
+}
 
 // ── Git branch merge (simple branch strategy) ───────────────────
 function mergeBranch(workspace: string, branch: string): { success: boolean; hasConflicts: boolean; output: string } {
@@ -279,7 +292,18 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
 
     child.stderr?.on("data", (d: Buffer) => {
       const chunk = d.toString();
-      if (RATE_LIMIT_PATTERNS.test(chunk)) lastRunRateLimited = true;
+      if (RATE_LIMIT_PATTERNS.test(chunk)) {
+        lastRunRateLimited = true;
+        // Parse Gemini's reset time so daemon can wait the right amount
+        const resetMin = parseGeminiResetTime(chunk);
+        if (resetMin > 0) lastRateLimitResetMinutes = resetMin;
+        // Kill Gemini CLI immediately on quota exhaustion — don't let it burn retries
+        if (/exhausted your capacity|TerminalQuotaError/i.test(chunk) && child.pid) {
+          writeToLog(`  [stderr] ⚡ Gemini quota exhausted — killing process tree to save quota\n`);
+          // Tree-kill: kill all descendants then the process itself
+          try { execSync(`pkill -9 -P ${child.pid} 2>/dev/null; kill -9 ${child.pid} 2>/dev/null`, { timeout: 3000 }); } catch { /* already dead */ }
+        }
+      }
       for (const line of chunk.split("\n")) {
         if (line.trim()) writeToLog(`  [stderr] ${line}\n`);
       }

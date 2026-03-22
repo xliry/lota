@@ -7,7 +7,7 @@ import { tgSend, tgSetupChatId, tgWaitForApproval } from "./telegram.js";
 import { LOG_FILE, LOG_DIR, log, ok, dim, err, logNonCritical, writeLog, logMemory, periodicGcHint, closeLog } from "./logging.js";
 import { checkForWork, refreshCommentBaselines } from "./comments.js";
 import { recoverStaleTasks, checkRuntimeStaleTasks } from "./recovery.js";
-import { runClaude, getCurrentProcess, resetBusy, wasRateLimited } from "./process.js";
+import { runClaude, getCurrentProcess, resetBusy, wasRateLimited, getRateLimitResetMinutes } from "./process.js";
 import { startChatLoop, stopChatLoop } from "./chat.js";
 import { startOrchestratorLoop, stopOrchestratorLoop } from "./orchestrator.js";
 import { evaluatePlan, extractSignals, getFailureCount } from "./evaluation.js";
@@ -292,9 +292,14 @@ async function handleCycleResult(code: number, work: WorkData, elapsed: number, 
 
     if (config.mode === "auto" && work.phase === "plan") {
       for (const t of work.tasks) {
+        // Fetch full task to get plan (sync response is slim — no plan field)
+        let fullTask = t;
+        try {
+          fullTask = await lota("GET", `/tasks/${t.id}`) as typeof t;
+        } catch (e) { dim(`Failed to fetch full task #${t.id}: ${(e as Error).message}`); }
         // Evaluate plan quality before auto-approving (megaplan pattern)
         const failures = getFailureCount(t.workspace || "");
-        const signals = extractSignals(t.plan, t.body || "", failures);
+        const signals = extractSignals(fullTask.plan, fullTask.body || t.body || "", failures);
         const evaluation = evaluatePlan(signals);
 
         if (evaluation.recommendation === "APPROVE") {
@@ -339,8 +344,14 @@ async function handleCycleResult(code: number, work: WorkData, elapsed: number, 
   } else if (wasRateLimited()) {
     // Rate limit — don't count as crash, wait and retry
     consecutiveRateLimits++;
-    const waitMinutes = getRateLimitWaitMinutes();
-    log(`⏳ Rate limited — waiting ${waitMinutes}m before retrying (consecutive: ${consecutiveRateLimits})`);
+    // Use Gemini's reported reset time if available, otherwise use tier-based backoff
+    const geminiResetMin = getRateLimitResetMinutes();
+    const tierWait = getRateLimitWaitMinutes();
+    // For short resets (<= 1min), wait 2min. For long resets, cap at 30min.
+    const waitMinutes = geminiResetMin > 0
+      ? Math.max(2, Math.min(geminiResetMin + 1, 30))
+      : tierWait;
+    log(`⏳ Rate limited — waiting ${waitMinutes}m before retrying (consecutive: ${consecutiveRateLimits}${geminiResetMin > 0 ? `, gemini reset: ${geminiResetMin}m` : ""})`);
 
     for (const t of work.tasks) {
       lota("POST", `/tasks/${t.id}/comment`, {
