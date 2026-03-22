@@ -381,38 +381,59 @@ lota("POST", "/tasks/<id>/comment", {"content": "..."})
 
 If agent isn't running, say: "Lota agent isn't running. Start it with `/lota-agent` in another terminal."
 
-## Pipeline Tasks (Multi-Model Orchestration)
+## Video Pipeline (Gemini Analiz → Görsel Üretim → Remotion)
 
-When the user wants a multi-step workflow across different models (e.g., Gemini analyzes video → Claude creates Remotion composition):
+Kullanıcı "video analiz et" dediğinde bu akışı takip et:
 
-### Step 1: Create the analysis task (Gemini agent)
+### Adım 1: Gemini agent'ı bul
+```bash
+# PID dosyalarından gemini agent'ı bul
+for f in ~/lota/.agents/*.pid; do
+  [ -f "$f" ] || continue
+  cli=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$f','utf8')).cli||'claude')" 2>/dev/null)
+  [ "$cli" = "gemini" ] && basename "$f" .pid
+done
+```
+Gemini agent yoksa: "Gemini agent çalışmıyor. `/lota-agent` ile `--cli gemini` başlat."
+
+### Adım 2: Video analiz task'ı oluştur
 ```
 lota("POST", "/tasks", {
-  "title": "Analyze video: extract timeline and scene descriptions",
-  "assign": "lota-2",
+  "title": "Video analiz: transkript + timeline + görsel analiz",
+  "assign": "<gemini-agent>",
   "priority": "high",
   "workspace": "~/my-video",
-  "body": "## What to do\nAnalyze the video at /home/xliry/my-video/out/video.mp4\n\n## Output\nWrite results to /tmp/analysis-{task_id}.json with:\n- timeline: array of {start_sec, end_sec, text, description}\n- scenes: array of {timestamp, visual_description}\n\n## Format\nJSON only, no markdown."
+  "body": "## Analiz görevi\n\nVideo: <dosya-yolu>\n\n## Shared skill oku\n~/.lota/shared/skills/video-analyze.md dosyasını oku ve formatına uy.\n\n## Çıktı\n/tmp/video-analysis-{task_id}.json dosyasına yaz.\n\n## Kurallar\n- Transkript Türkçe slang'e sadık kalsın\n- Word-by-word subtitle timeline çıkar\n- Her sahneyi görsel olarak analiz et\n- Ekrandaki tüm text'leri çıkar\n- Grid prompt önerileri yaz\n- Remotion template öner"
 })
 ```
 
-### Step 2: Create the production task (Claude agent, depends on step 1)
+### Adım 3: Sonuçları sun
+Gemini tamamladığında:
+1. `/tmp/video-analysis-{id}.json` dosyasını oku
+2. Transkripti kullanıcıya göster: "İşte konuşma metni — Minimax'te TTS yapabilirsin"
+3. Grid prompt önerilerini göster: "Flow API'ye gönderilebilecek prompt'lar hazır"
+4. Template önerisini göster: "Önerilen Remotion template: SaasFlashTest"
+
+### Adım 4 (Opsiyonel): Flow API ile görsel üret
+Kullanıcı isterse, Claude agent'a Flow API task'ı oluştur:
 ```
 lota("POST", "/tasks", {
-  "title": "Create Remotion composition from video analysis",
-  "assign": "lota-1",
-  "priority": "high",
+  "title": "Generate grid images via Flow API",
+  "assign": "<claude-agent>",
   "workspace": "~/my-video",
-  "body": "## What to do\nRead /tmp/analysis-{prev_task_id}.json and create a Remotion composition.\n\n## Files to modify\n- src/NewComposition.tsx — create new composition\n- src/Root.tsx — register composition\n\n## Input\nTimeline and scene data from the analysis task.",
+  "body": "## Shared skill oku\n~/.lota/shared/skills/flow-api.md\n\nBase URL: <kullanıcıdan al>\n\n## Prompt'lar\n/tmp/video-analysis-{prev_id}.json dosyasından grid_image_prompts dizisini oku.\n\n## Çıktı\nGörselleri /tmp/flow-output-{task_id}/ dizinine kaydet.",
   "depends_on": [prev_task_id]
 })
 ```
 
-### Key Rules for Pipelines
-- **Output files**: Analysis tasks MUST write results to `/tmp/` with task ID in filename
-- **depends_on**: Production tasks MUST specify depends_on to ensure correct ordering
-- **Assign by capability**: Gemini agents for multimodal, Claude agents for code
-- **Workspace**: Both tasks can share workspace IF they don't run concurrently (depends_on ensures this)
+## Pipeline Tasks (Genel Multi-Model Orchestration)
+
+### Key Rules
+- **Output files**: Analiz task'ları `/tmp/` dizinine task ID ile yazar
+- **depends_on**: Zincirleme task'lar depends_on ile sıralanır
+- **Assign by capability**: Gemini → multimodal, Claude → code
+- **Shared skills**: Agent'lar `~/.lota/shared/skills/` dizinindeki skill'leri okuyabilir
+- **Workspace**: depends_on olan task'lar aynı workspace'i paylaşabilir (sıralı çalışır)
 
 ## Flow
 
