@@ -7,6 +7,7 @@ import { isGitRepoRoot } from "./git.js";
 import { createWorktree, mergeWorktree, cleanupWorktree, type WorktreeInfo } from "./worktree.js";
 import { log, ok, dim, err, logNonCritical, formatEvent, writeToLog } from "./logging.js";
 import { buildPrompt, resolveWorkspace } from "./prompt.js";
+import { buildCliArgs } from "./cli-spawn.js";
 import type { AgentConfig, WorkData } from "./types.js";
 
 let currentProcess: ChildProcess | null = null;
@@ -237,14 +238,6 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
 
     mergeClaudeSettings(join(process.env.HOME || "/root", ".claude", "settings.json"), true);
 
-    const isRoot = process.getuid?.() === 0;
-    const args: string[] = [
-      "--print", "--verbose", "--output-format", "stream-json",
-      ...(isRoot ? [] : ["--dangerously-skip-permissions"]),
-      "--model", config.model,
-      ...(config.configPath ? ["--mcp-config", config.configPath] : []),
-    ];
-
     const workingDir = resolveWorkspace(work);
     const rawWorkspace = work.tasks[0]?.workspace;
     if (rawWorkspace) {
@@ -255,11 +248,14 @@ export function runClaude(config: AgentConfig, work: WorkData): Promise<number> 
     const promptWork: WorkData = worktreeInfo
       ? { ...work, tasks: work.tasks.map(t => ({ ...t, workspace: worktreeInfo.worktreePath })) }
       : work;
-    args.push("-p", buildPrompt(config.agentName, promptWork, config));
+    const prompt = buildPrompt(config.agentName, promptWork, config);
+    const { command, args } = buildCliArgs(config, prompt, { injectSharedSkills: true });
 
-    mergeClaudeSettings(join(claudeCwd, ".claude", "settings.json"), false);
+    if (config.cli === "claude") {
+      mergeClaudeSettings(join(claudeCwd, ".claude", "settings.json"), false);
+    }
 
-    const child = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"], cwd: claudeCwd, env: cleanEnv });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], cwd: claudeCwd, env: cleanEnv });
     currentProcess = child;
     lastRunRateLimited = false;
 

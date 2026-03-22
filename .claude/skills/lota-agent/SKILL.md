@@ -217,7 +217,37 @@ Wait for user response. If they say yes with a count → add that many new agent
 
 ---
 
-### Phase 5: Count pending tasks and recommend agent count
+### Phase 5: Choose CLI per agent (Multi-Model)
+
+Ask the user which CLI(s) to use:
+> "Which CLI for agents?
+> - **Claude only** — all agents use Claude (default)
+> - **Gemini only** — all agents use Gemini CLI
+> - **Mixed** — e.g. lota-1 Claude, lota-2 Gemini"
+
+Default to **Claude only** if user doesn't specify.
+
+If **Mixed**, ask which agents get which CLI. Store as a map:
+```
+lota-1 → claude
+lota-2 → gemini
+```
+
+The `--cli` flag controls this: `--cli claude` (default) or `--cli gemini`.
+
+**Gemini agents are ideal for:**
+- Video/audio analysis tasks (multimodal)
+- Image description and classification
+- Tasks that benefit from Gemini's large context window
+
+**Claude agents are ideal for:**
+- Code generation, editing, and debugging
+- Complex reasoning and planning
+- Remotion composition creation
+
+---
+
+### Phase 6: Count pending tasks and recommend agent count
 
 Use the MCP tool to fetch pending tasks:
 
@@ -252,7 +282,7 @@ Wait for user confirmation or override.
 
 ---
 
-### Phase 6: Choose mode
+### Phase 7: Choose mode
 
 Ask the user:
 > "Choose mode:
@@ -263,7 +293,7 @@ Default to **auto** if user doesn't specify or skips.
 
 ---
 
-### Phase 7: Distribute tasks (workspace-serialized)
+### Phase 8: Distribute tasks (workspace-serialized)
 
 Before spawning agents, distribute assigned tasks round-robin. **Same workspace = sequential chain** to prevent conflicts.
 
@@ -294,7 +324,7 @@ If agent count > 1:
 
 ---
 
-### Phase 8: Start agents via tmux
+### Phase 9: Start agents via tmux
 
 **Kill any old session first:**
 ```bash
@@ -309,13 +339,24 @@ pkill -f "node.*daemon" 2>/dev/null; true
 **Create tmux session with first agent:**
 ```bash
 tmux new-session -d -s lota-agents -x 220 -y 50
-tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-1 --interval 15 --mode {MODE} --model opus" Enter
+tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-1 --interval 15 --mode {MODE} --cli {CLI} --model {MODEL}" Enter
 ```
+
+Where `{CLI}` is `claude` or `gemini`, and `{MODEL}` is the model name (e.g. `opus`, `sonnet`, `gemini-2.5-pro`).
 
 **For each additional agent (lota-2, lota-3, etc.):**
 ```bash
 tmux split-window -t lota-agents
-tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-{N} --interval 15 --mode {MODE} --model opus" Enter
+tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-{N} --interval 15 --mode {MODE} --cli {CLI} --model {MODEL}" Enter
+```
+
+**Example mixed pool:**
+```bash
+# lota-1: Claude for code tasks
+tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-1 --cli claude --model opus" Enter
+# lota-2: Gemini for multimodal tasks (video/audio analysis)
+tmux split-window -t lota-agents
+tmux send-keys -t lota-agents "cd ~/lota && node dist/daemon.js --name lota-2 --cli gemini --model gemini-2.5-pro" Enter
 ```
 
 **Balance panes after all agents started:**

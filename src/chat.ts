@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { lota } from "./github.js";
 import { ok, dim, err, logNonCritical, formatEvent, writeToLog } from "./logging.js";
 import { buildChatPrompt } from "./chat-prompt.js";
+import { buildCliArgs } from "./cli-spawn.js";
 import type { AgentConfig } from "./types.js";
 
 let chatTimer: ReturnType<typeof setInterval> | null = null;
@@ -71,19 +72,14 @@ async function handleDMMessages(dmId: number, config: AgentConfig): Promise<void
   cleanEnv.GITHUB_REPO = config.githubRepo;
   cleanEnv.AGENT_NAME = config.agentName;
 
-  ensureClaudeSettings(join(process.env.HOME || "/root", ".claude", "settings.json"));
+  if (config.cli === "claude") {
+    ensureClaudeSettings(join(process.env.HOME || "/root", ".claude", "settings.json"));
+  }
 
-  const isRoot = process.getuid?.() === 0;
-  const args: string[] = [
-    "--print", "--verbose", "--output-format", "stream-json",
-    ...(isRoot ? [] : ["--dangerously-skip-permissions"]),
-    "--model", config.model,
-    ...(config.configPath ? ["--mcp-config", config.configPath] : []),
-    "-p", prompt,
-  ];
+  const { command, args } = buildCliArgs(config, prompt);
 
   return new Promise((resolve) => {
-    const child = spawn("claude", args, {
+    const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: process.cwd(),
       env: cleanEnv,

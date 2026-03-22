@@ -10,7 +10,8 @@ import { recoverStaleTasks, checkRuntimeStaleTasks } from "./recovery.js";
 import { runClaude, getCurrentProcess, resetBusy, wasRateLimited } from "./process.js";
 import { startChatLoop, stopChatLoop } from "./chat.js";
 import { startOrchestratorLoop, stopOrchestratorLoop } from "./orchestrator.js";
-import type { AgentConfig, AgentMode, WorkData } from "./types.js";
+import { evaluatePlan, extractSignals, getFailureCount } from "./evaluation.js";
+import type { AgentConfig, AgentMode, CliType, WorkData } from "./types.js";
 
 const MS_PER_MINUTE = 60_000;
 
@@ -53,9 +54,9 @@ function checkAndCleanStalePid(name: string): void {
   }
 }
 
-function writePidFile(name: string, model: string): void {
+function writePidFile(name: string, model: string, cli: CliType = "claude"): void {
   try {
-    writeFileSync(getPidFile(name), JSON.stringify({ pid: process.pid, name, started: new Date().toISOString(), model }, null, 2) + "\n", { mode: 0o644 });
+    writeFileSync(getPidFile(name), JSON.stringify({ pid: process.pid, name, started: new Date().toISOString(), model, cli }, null, 2) + "\n", { mode: 0o644 });
     dim(`PID file: ${getPidFile(name)}`);
   } catch (e) { logNonCritical("write PID file", e); }
 }
@@ -106,6 +107,7 @@ function parseArgs(): AgentConfig {
   let interval = 15, once = false, mcpConfig = "", model = "sonnet";
   let mode: AgentMode = "auto", maxTasksPerCycle = 1, singlePhaseOverride: boolean | null = null;
   let maxRssMb = 1024, nameOverride = "", useWorktree = false, chatInterval = 3;
+  let cli: CliType = "claude";
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -121,6 +123,7 @@ function parseArgs(): AgentConfig {
       case "--name": case "-n": nameOverride = args[++i]; break;
       case "--worktree": useWorktree = true; break;
       case "--chat-interval": chatInterval = parseInt(args[++i], 10); break;
+      case "--cli": cli = args[++i] as CliType; break;
       case "--help": case "-h":
         console.log(`Usage: lota-agent [options]
 
@@ -138,6 +141,7 @@ Options:
   --no-single-phase     Use separate plan→approve→execute phases (this is now the default)
   --worktree            Use git worktree isolation (default: simple branch strategy)
   --chat-interval <sec> Chat loop poll interval in seconds (default: 3)
+  --cli <claude|gemini> CLI to spawn for tasks (default: claude)
   -1, --once            Run once then exit
   -h, --help            Show this help`);
         process.exit(0);
@@ -173,7 +177,7 @@ Options:
   }
 
   const creds = loadCredentials(configPath, nameOverride);
-  return { configPath, model, interval, once, mode, singlePhase, maxTasksPerCycle, maxRssMb, useWorktree, chatInterval, ...creds };
+  return { configPath, model, cli, interval, once, mode, singlePhase, maxTasksPerCycle, maxRssMb, useWorktree, chatInterval, ...creds };
 }
 
 // ── Shutdown ─────────────────────────────────────────────────────
@@ -238,6 +242,7 @@ function printBanner(config: AgentConfig): void {
     "  └─────────────────────────┘",
     `  agent:    ${config.agentName}`,
     `  mode:     ${modeLabel}`,
+    `  cli:      ${config.cli}`,
     `  model:    ${config.model}`,
     `  config:   ${config.configPath}`,
     `  interval: ${config.interval}s`,
@@ -287,10 +292,28 @@ async function handleCycleResult(code: number, work: WorkData, elapsed: number, 
 
     if (config.mode === "auto" && work.phase === "plan") {
       for (const t of work.tasks) {
-        ok(`Task #${t.id} plan complete — auto-approving`);
-        try {
-          await lota("POST", `/tasks/${t.id}/status`, { status: "approved" });
-        } catch (e) { err(`Auto-approve failed for task #${t.id}: ${(e as Error).message}`); }
+        // Evaluate plan quality before auto-approving (megaplan pattern)
+        const failures = getFailureCount(t.workspace || "");
+        const signals = extractSignals(t.plan, t.body || "", failures);
+        const evaluation = evaluatePlan(signals);
+
+        if (evaluation.recommendation === "APPROVE") {
+          ok(`Task #${t.id} plan evaluated: ${evaluation.recommendation} (${evaluation.confidence}) — auto-approving`);
+          try {
+            await lota("POST", `/tasks/${t.id}/status`, { status: "approved" });
+          } catch (e) { err(`Auto-approve failed for task #${t.id}: ${(e as Error).message}`); }
+        } else if (evaluation.recommendation === "REJECT") {
+          err(`Task #${t.id} plan evaluated: REJECT — ${evaluation.rationale}`);
+          try {
+            await lota("POST", `/tasks/${t.id}/comment`, {
+              content: `⚠️ **Plan rejected by evaluation**: ${evaluation.rationale}\n\nPlease revise the plan with more specific goals and file paths.`,
+            });
+            await lota("POST", `/tasks/${t.id}/status`, { status: "assigned" });
+          } catch (e) { err(`Reject feedback failed for task #${t.id}: ${(e as Error).message}`); }
+        } else {
+          // ESCALATE — leave as planned, user will review via Hub
+          log(`⚠️ Task #${t.id} plan escalated: ${evaluation.rationale}`);
+        }
       }
     }
 
@@ -370,7 +393,7 @@ async function main() {
   activeAgentName = config.agentName;
 
   checkAndCleanStalePid(config.agentName);
-  writePidFile(config.agentName, config.model);
+  writePidFile(config.agentName, config.model, config.cli);
 
   if (config.mode === "supervised" && !config.telegramChatId) {
     try { config.telegramChatId = await tgSetupChatId(config); ok("Telegram connected!"); }

@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import { lota } from "./github.js";
 import { ok, dim, err, logNonCritical, formatEvent, writeToLog } from "./logging.js";
 import { buildOrchestratorPrompt } from "./orchestrator-prompt.js";
+import { buildCliArgs } from "./cli-spawn.js";
 import type { AgentConfig, OrchestratorSnapshot, OrchestratorDelta } from "./types.js";
 import { AGENTS_DIR } from "./daemon.js";
 
@@ -175,19 +176,14 @@ function runOrchestratorClaude(prompt: string, config: AgentConfig): Promise<voi
   cleanEnv.GITHUB_REPO = config.githubRepo;
   cleanEnv.AGENT_NAME = config.agentName;
 
-  ensureClaudeSettings(join(process.env.HOME || "/root", ".claude", "settings.json"));
+  if (config.cli === "claude") {
+    ensureClaudeSettings(join(process.env.HOME || "/root", ".claude", "settings.json"));
+  }
 
-  const isRoot = process.getuid?.() === 0;
-  const args: string[] = [
-    "--print", "--verbose", "--output-format", "stream-json",
-    ...(isRoot ? [] : ["--dangerously-skip-permissions"]),
-    "--model", config.model,
-    ...(config.configPath ? ["--mcp-config", config.configPath] : []),
-    "-p", prompt,
-  ];
+  const { command, args } = buildCliArgs(config, prompt);
 
   return new Promise((resolve) => {
-    const child = spawn("claude", args, {
+    const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: process.cwd(),
       env: cleanEnv,

@@ -1,3 +1,4 @@
+import { extractSignals, evaluatePlan, getFailureCount } from "./evaluation.js";
 import type { OrchestratorSnapshot, OrchestratorDelta } from "./types.js";
 
 export function buildOrchestratorPrompt(
@@ -103,12 +104,16 @@ export function buildOrchestratorPrompt(
     "",
     "─── SMART RULES ───",
     "",
-    "APPROVING PLANS:",
+    "APPROVING PLANS (evaluation-guided):",
     "  - BEFORE approving a planned task, READ IT FIRST: lota(\"GET\", \"/tasks/<id>\")",
     "  - Check the plan comment for: clear goals, specific file paths, reasonable scope",
-    "  - Approve if: plan has clear goals AND affected_files are listed AND effort is reasonable",
-    "  - REJECT (comment with feedback) if: plan is vague, missing file paths, or scope is too broad",
-    "  - When rejecting, comment with SPECIFIC feedback about what to improve",
+    "  - The daemon auto-evaluates plans using a decision table (megaplan pattern):",
+    "    APPROVE: plan has goals + affected_files + specific paths",
+    "    REJECT: plan is missing goals or affected_files — auto-rejected with feedback",
+    "    ESCALATE: workspace has 2+ previous failures — needs manual review",
+    "  - If a plan was auto-rejected, the agent will revise — no action needed from you",
+    "  - If a plan was escalated, inform the user in your briefing",
+    "  - Watch for SCOPE CREEP: if plan goals don't match the original task, flag it",
     "",
     "ASSIGNING TASKS:",
     "  - NEVER assign two different agents to the same workspace — this causes git conflicts",

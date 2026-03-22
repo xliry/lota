@@ -117,19 +117,35 @@ lota("POST", "/tasks/<id>/comment", {"content": "..."})
 
 ## Agent Discovery
 
-Before creating multiple tasks, check which agents are alive:
+Before creating multiple tasks, check which agents are alive and which CLI they use:
 
 ```bash
 for f in ~/lota/.agents/*.pid; do
   [ -f "$f" ] || continue
   name=$(basename "$f" .pid)
-  pid=$(node -e "const d=JSON.parse(require('fs').readFileSync('$f','utf8'));process.stdout.write(String(d.pid))" 2>/dev/null)
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$name"
+  data=$(cat "$f" 2>/dev/null)
+  pid=$(node -e "process.stdout.write(String(JSON.parse('$data').pid))" 2>/dev/null)
+  cli=$(node -e "process.stdout.write(JSON.parse('$data').cli||'claude')" 2>/dev/null)
+  model=$(node -e "process.stdout.write(JSON.parse('$data').model||'unknown')" 2>/dev/null)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$name|$cli|$model"
 done
 ```
 
 - If the `.agents/` directory doesn't exist or no PIDs are alive → default agent list is `["lota-1"]`
-- Result: a list like `["lota-1", "lota-2", "lota-3"]`
+- Result: a list like `["lota-1|claude|opus", "lota-2|gemini|gemini-2.5-pro"]`
+- Display CLI type in dashboard:
+  ```
+  Agents Online:
+    lota-1  claude/opus           2 tasks
+    lota-2  gemini/gemini-2.5-pro  1 task
+  ```
+
+### Smart Task Routing
+
+When creating tasks, consider agent CLI capabilities:
+- **Video/audio analysis, image description** → assign to a **gemini** agent
+- **Code generation, Remotion, debugging** → assign to a **claude** agent
+- If no gemini agent is available, warn the user: "No Gemini agent running — this task needs multimodal analysis. Start one with `/lota-agent`."
 
 ## Creating Tasks — Smart Context-Aware Flow
 
@@ -364,6 +380,39 @@ lota("POST", "/tasks/<id>/comment", {"content": "..."})
 - Agent status: `ps aux | grep daemon.js | grep -v grep`
 
 If agent isn't running, say: "Lota agent isn't running. Start it with `/lota-agent` in another terminal."
+
+## Pipeline Tasks (Multi-Model Orchestration)
+
+When the user wants a multi-step workflow across different models (e.g., Gemini analyzes video → Claude creates Remotion composition):
+
+### Step 1: Create the analysis task (Gemini agent)
+```
+lota("POST", "/tasks", {
+  "title": "Analyze video: extract timeline and scene descriptions",
+  "assign": "lota-2",
+  "priority": "high",
+  "workspace": "~/my-video",
+  "body": "## What to do\nAnalyze the video at /home/xliry/my-video/out/video.mp4\n\n## Output\nWrite results to /tmp/analysis-{task_id}.json with:\n- timeline: array of {start_sec, end_sec, text, description}\n- scenes: array of {timestamp, visual_description}\n\n## Format\nJSON only, no markdown."
+})
+```
+
+### Step 2: Create the production task (Claude agent, depends on step 1)
+```
+lota("POST", "/tasks", {
+  "title": "Create Remotion composition from video analysis",
+  "assign": "lota-1",
+  "priority": "high",
+  "workspace": "~/my-video",
+  "body": "## What to do\nRead /tmp/analysis-{prev_task_id}.json and create a Remotion composition.\n\n## Files to modify\n- src/NewComposition.tsx — create new composition\n- src/Root.tsx — register composition\n\n## Input\nTimeline and scene data from the analysis task.",
+  "depends_on": [prev_task_id]
+})
+```
+
+### Key Rules for Pipelines
+- **Output files**: Analysis tasks MUST write results to `/tmp/` with task ID in filename
+- **depends_on**: Production tasks MUST specify depends_on to ensure correct ordering
+- **Assign by capability**: Gemini agents for multimodal, Claude agents for code
+- **Workspace**: Both tasks can share workspace IF they don't run concurrently (depends_on ensures this)
 
 ## Flow
 

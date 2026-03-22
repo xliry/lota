@@ -1,8 +1,10 @@
 export type AgentMode = "auto" | "supervised";
+export type CliType = "claude" | "gemini";
 
 export interface AgentConfig {
   configPath: string;
   model: string;
+  cli: CliType;
   interval: number;
   once: boolean;
   mode: AgentMode;
