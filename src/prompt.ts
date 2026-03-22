@@ -152,6 +152,27 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     ].join("\n");
   }
 
+  // ── Video analysis protocol ────────────────────────────────────
+  const isVideoTask = /video|audio|analiz|transcript|mp4|mp3|wav/i.test(`${t.title} ${t.body || ""}`);
+  const videoProtocol = isVideoTask ? [
+    "",
+    "VIDEO ANALYSIS PROTOCOL (MANDATORY for this task):",
+    "  This task involves video/audio analysis. Follow this EXACT protocol:",
+    "",
+    "  Step 1: Ensure file is in ~/gemini-staging/ with a simple name (no spaces/parens)",
+    "  Step 2: Run this EXACT command and wait for it to finish (may take 5-10 minutes):",
+    `    cd ~/gemini-staging && echo '@./VIDEO_FILE Analyze this video. Extract transcript with timestamps, visual scene descriptions with colors hex and text on screen, design template. Output JSON.' | gemini -y -o json > /tmp/gemini-raw-${t.id}.json 2>/dev/null && echo GEMINI_DONE`,
+    `  Step 3: Read the result: cat /tmp/gemini-raw-${t.id}.json | python3 -c "import sys,json; print(json.load(sys.stdin)['response'])"`,
+    `  Step 4: Structure Gemini's output into /tmp/video-analysis-${t.id}.json using the format from ~/.lota/shared/skills/video-analyze.md`,
+    "",
+    "  FORBIDDEN — violation = immediate task failure:",
+    "  - ffmpeg, whisper, silencedetect, any audio/video tool",
+    "  - curl, OAuth, REST API, googleapis.com",
+    "  - ~/.gemini/ auth files, API keys, pip install",
+    "  - gemini -p (does NOT support @ file refs — use echo pipe)",
+    "  - More than 2 Gemini retries. If fails twice → report error, STOP.",
+  ].join("\n") : "";
+
   const isCampaignTask = t.title.startsWith("Campaign:");
   const branchName = `task-${t.id}-${agentName}`;
   const branchRule = config.useWorktree
@@ -234,6 +255,7 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
       workflow,
       "",
       rules,
+      videoProtocol,
       "",
       taskHeader,
       body,
@@ -249,6 +271,7 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     workflow,
     "",
     rules,
+    videoProtocol,
     "",
     taskHeader,
     body,
