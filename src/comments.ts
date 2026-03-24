@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { lota } from "./github.js";
 import { dim, logNonCritical } from "./logging.js";
+import { parseWorkspaceFromBody } from "./prompt.js";
 import type { AgentConfig, TaskInfo, CommentUpdate, WorkData } from "./types.js";
 
 // ── Dependency checking ───────────────────────────────────────────
@@ -186,26 +187,42 @@ export async function checkForWork(config: AgentConfig): Promise<WorkData | null
     return { phase: "comments", tasks: [], commentUpdates };
   }
 
+  // Enrich a task: fetch full body, parse workspace from body if missing
+  async function enrichTask(t: TaskInfo): Promise<TaskInfo> {
+    try {
+      const details = await lota("GET", `/tasks/${t.id}`) as {
+        body?: string;
+        plan?: { affected_files?: string[]; goals?: string[] };
+      };
+      const enriched = { ...t, plan: details.plan };
+      // Parse workspace from issue body when not set via label
+      if (!enriched.workspace && details.body) {
+        const parsed = parseWorkspaceFromBody(details.body);
+        if (parsed) {
+          enriched.workspace = parsed;
+          dim(`Workspace parsed from body: ${parsed} (task #${t.id})`);
+        }
+      }
+      // Carry body forward for prompt building
+      if (details.body && !enriched.body) enriched.body = details.body;
+      return enriched;
+    } catch (e) {
+      logNonCritical(`enrich task #${t.id}`, e);
+      return t;
+    }
+  }
+
   if (approved.length) {
     const tasksToExecute = approved.sort((a, b) => a.id - b.id).slice(0, config.maxTasksPerCycle);
-    const enrichedTasks = await Promise.all(
-      tasksToExecute.map(async (t) => {
-        try {
-          const details = await lota("GET", `/tasks/${t.id}`) as { plan?: { affected_files?: string[]; goals?: string[] } };
-          return { ...t, plan: details.plan };
-        } catch (e) {
-          logNonCritical(`fetch plan for task #${t.id}`, e);
-          return t;
-        }
-      })
-    );
+    const enrichedTasks = await Promise.all(tasksToExecute.map(enrichTask));
     return { phase: "execute", tasks: enrichedTasks, commentUpdates: [] };
   }
 
   if (assigned.length) {
-    const sorted = assigned.sort((a, b) => a.id - b.id);
+    const sorted = assigned.sort((a, b) => a.id - b.id).slice(0, config.maxTasksPerCycle);
+    const enrichedTasks = await Promise.all(sorted.map(enrichTask));
     const phase = config.singlePhase ? "single" : "plan";
-    return { phase, tasks: sorted.slice(0, config.maxTasksPerCycle), commentUpdates: [] };
+    return { phase, tasks: enrichedTasks, commentUpdates: [] };
   }
 
   return null;

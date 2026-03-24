@@ -4,6 +4,15 @@ import { err, dim, logNonCritical } from "./logging.js";
 import { isGitRepoRoot, isGitRepo } from "./git.js";
 import type { AgentConfig, WorkData } from "./types.js";
 
+// ── Workspace extraction from issue body ─────────────────────────
+const WORKSPACE_RE = /###\s*Workspace\s*\n+\s*(\S+)/i;
+
+/** Parse workspace path from issue body when not set via label. */
+export function parseWorkspaceFromBody(body: string): string | null {
+  const match = body.match(WORKSPACE_RE);
+  return match ? match[1] : null;
+}
+
 // ── Task body sanitization ───────────────────────────────────────
 function sanitizeTaskBody(body: string): string {
   let cleaned = body.replace(/<!--[\s\S]*?-->/g, "");
@@ -174,13 +183,15 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
   ].join("\n") : "";
 
   const isCampaignTask = t.title.startsWith("Campaign:");
+  const isBountyTask = /^bounty:/i.test(t.title);
+  const isDesloppifyTask = /desloppify/i.test(`${t.title} ${t.body || ""}`);
   const branchName = `task-${t.id}-${agentName}`;
   const branchRule = config.useWorktree
     ? "  - You are already in the correct workspace directory (git worktree)."
     : `  - You are in the workspace directory. First, run: git pull origin main && git checkout -b ${branchName} (or git checkout ${branchName} if it exists). Push to this branch.`;
 
-  const campaignRules = [
-    "RULES (CAMPAIGN TASK):",
+  // ── Common rules shared by all task types ──────────────────────
+  const commonRules = [
     branchRule,
     "  - Git identity is pre-configured. Do not run git config.",
     "  - Token file: ~/lota/.github-token (for git push auth).",
@@ -189,15 +200,37 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     "  - Do NOT post plan comments. Your commit is the audit trail.",
     "  - Use `gh` CLI for GitHub operations, NOT curl.",
     "  - NEVER force push.",
+    "  - SIGNATURE: When creating PRs, end the body with: Generated with [Lota](https://github.com/xliry/lota)",
+  ];
+
+  // ── Cross-fork PR rule (for tasks targeting external repos) ────
+  const crossForkRule = [
+    "  - CROSS-FORK PRs: When creating PRs to repos you don't own, use:",
+    "    `GITHUB_TOKEN=\"\" gh pr create --repo <owner>/<repo> --head xliry:<branch> --base main --body-file <file>`",
+    "    The GITHUB_TOKEN=\"\" prefix is required — fine-grained PAT cannot create cross-fork PRs.",
+  ];
+
+  // ── Desloppify-specific rules ──────────────────────────────────
+  const desloppifyRules = isDesloppifyTask ? [
+    "  - DESLOPPIFY WORKFLOW:",
+    "    - ALWAYS activate Python 3.11 venv first: `source ~/desloppify/.venv/bin/activate`",
+    "    - Run: `pip install --upgrade 'desloppify[full]'`",
+    "    - Run: `desloppify update-skill claude`",
+    "    - Run: `desloppify scan --path .`",
+    "    - Run: `desloppify next` — fix what it says, resolve, repeat. This is the main loop.",
+    "    - Do NOT invent your own scores or analysis. Use desloppify output ONLY.",
+    "    - Do NOT generate review JSON manually (no Python scripts to create batch results).",
+    "    - Use `desloppify review --run-batches` (without --dry-run) for subjective reviews.",
+    "    - Use `desloppify plan` to reorder priorities. Rescan periodically.",
+  ] : [];
+
+  const campaignRules = [
+    "RULES (CAMPAIGN TASK):",
+    ...commonRules,
     "  - CAMPAIGN RULES:",
     "    - Do NOT open issues or PRs on the target repo.",
     "    - Clone the target repo to /tmp/ (shallow clone, --depth 1).",
-    "    - Use the REAL desloppify CLI tool: pip install --upgrade 'desloppify[full]'",
-    "    - Run: desloppify update-skill claude",
-    "    - Run: desloppify scan --path . (in the cloned repo)",
-    "    - Run: desloppify next — fix issues, resolve, repeat. This is the main loop.",
-    "    - Do NOT invent your own scores or analysis. Use desloppify output ONLY.",
-    "    - Use desloppify plan to reorder priorities. Rescan periodically.",
+    ...desloppifyRules,
     "    - Write report to ~/lota/campaigns/reports/{owner}-{repo}.md",
     "    - Write tweet draft to ~/lota/campaigns/tweets/{owner}-{repo}.txt",
     "    - Keep tweets punchy: 'helping + light dunking' tone.",
@@ -205,17 +238,10 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
   ].join("\n");
 
   const bountyRules = [
-    "RULES:",
-    branchRule,
-    "  - Git identity is pre-configured. Do not run git config.",
-    "  - Token file: ~/lota/.github-token (for git push auth).",
+    "RULES (BOUNTY TASK):",
+    ...commonRules,
     `  - Run \`${buildCmd}\` before pushing. Fix errors before committing.`,
     `  - Make ONE focused commit: "feat: description (#${t.id})"`,
-    "  - Do NOT use TodoWrite tool. USE the Agent tool for parallel subtasks when the task is large.",
-    "  - Do NOT re-read the task via lota API. The task body is below.",
-    "  - Do NOT post plan comments. Your commit is the audit trail.",
-    "  - Use `gh` CLI for GitHub operations, NOT curl.",
-    "  - NEVER force push.",
     "  - SCOREBOARD: The bounty scoreboard is at ~/lota-agents/bounty-scoreboard.md (repo: xliry/lota-agents).",
     "    To update: read the file, edit your row, commit, and push from ~/lota-agents (NOT from the workspace).",
     "  - CROSS-FORK PRs: You are working in a FORK (xliry/desloppify). PRs MUST go to the UPSTREAM repo.",
@@ -230,10 +256,18 @@ export function buildPrompt(agentName: string, work: WorkData, config: AgentConf
     "  - BOUNTY SNAPSHOT: When verifying bounty submissions, ALWAYS read source files at commit 6eb2065.",
     "    Use `git show 6eb2065:<path>` to read files. Do NOT use the working tree — it may have changed since the submission.",
     "    Run `git fetch origin` first if the commit is not available locally.",
-    "  - SIGNATURE: When creating PRs, end the body with: Generated with [Lota](https://github.com/xliry/lota)",
   ].join("\n");
 
-  const rules = isCampaignTask ? campaignRules : bountyRules;
+  const genericRules = [
+    "RULES:",
+    ...commonRules,
+    `  - Run \`${buildCmd}\` before pushing if applicable. Fix errors before committing.`,
+    `  - Make ONE focused commit: "feat: description (#${t.id})"`,
+    ...crossForkRule,
+    ...desloppifyRules,
+  ].join("\n");
+
+  const rules = isCampaignTask ? campaignRules : isBountyTask ? bountyRules : genericRules;
 
   const workflow = [
     "WORKFLOW:",
